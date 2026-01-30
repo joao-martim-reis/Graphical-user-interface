@@ -341,15 +341,21 @@ class MainWindow(QtWidgets.QMainWindow):
         group = QtWidgets.QGroupBox("Reconstruction parameters")
         layout = QtWidgets.QVBoxLayout(group)
         
-        self.recon_config_editor = QtWidgets.QTextEdit()
-        self.recon_config_editor.setPlaceholderText("Reconstruction config (JSON)")
-        self.recon_config_editor.setMinimumHeight(120)
+        self.recon_config_scroll = QtWidgets.QScrollArea()
+        self.recon_config_scroll.setWidgetResizable(True)
+        self.recon_config_container = QtWidgets.QWidget()
+        self.recon_form_layout = QtWidgets.QFormLayout(self.recon_config_container)
+        self.recon_form_layout.setFieldGrowthPolicy(QtWidgets.QFormLayout.ExpandingFieldsGrow)
+        self.recon_config_scroll.setWidget(self.recon_config_container)
+
+        self._recon_config_widgets = {}
+        self._recon_config_meta = {}
         self._reset_recon_config_editor()
         
         self.reset_config_btn = QtWidgets.QPushButton("Use default config")
         self.reset_config_btn.clicked.connect(self._reset_recon_config_editor)
         
-        layout.addWidget(self.recon_config_editor)
+        layout.addWidget(self.recon_config_scroll)
         layout.addWidget(self.reset_config_btn)
         
         return group
@@ -586,20 +592,82 @@ class MainWindow(QtWidgets.QMainWindow):
     
     def _reset_recon_config_editor(self):
         config = self._get_current_default_config()
-        self.recon_config_editor.setPlainText(json.dumps(config, indent=2))
+        self._build_recon_config_form(config)
     
     def _get_recon_config(self):
-        text = self.recon_config_editor.toPlainText().strip()
-        if not text:
+        if not self._recon_config_widgets:
             return self._get_current_default_config()
-        try:
-            config = json.loads(text)
-            if not isinstance(config, dict):
-                raise ValueError("Config must be a JSON object")
-            return config
-        except Exception as exc:
-            QtWidgets.QMessageBox.warning(self, "Reconstruction", f"Invalid config JSON: {exc}")
-            return None
+
+        config = {}
+        for key, widget in self._recon_config_widgets.items():
+            meta = self._recon_config_meta.get(key, {})
+            value_type = meta.get("type", str)
+            is_list = meta.get("is_list", False)
+
+            if isinstance(widget, QtWidgets.QCheckBox):
+                config[key] = widget.isChecked()
+                continue
+
+            text = ""
+            if isinstance(widget, QtWidgets.QComboBox):
+                text = widget.currentText().strip()
+            elif isinstance(widget, QtWidgets.QLineEdit):
+                text = widget.text().strip()
+
+            if is_list:
+                if not text:
+                    config[key] = []
+                else:
+                    parts = [part.strip() for part in text.split(",") if part.strip()]
+                    config[key] = parts
+                continue
+
+            if value_type in (int, float):
+                try:
+                    num = float(text) if text else 0.0
+                    config[key] = int(num) if value_type is int else float(num)
+                except Exception:
+                    QtWidgets.QMessageBox.warning(self, "Reconstruction", f"Invalid numeric value for {key}")
+                    return None
+                continue
+
+            config[key] = text
+
+        return config
+
+    def _build_recon_config_form(self, config):
+        # Clear existing rows
+        while self.recon_form_layout.rowCount() > 0:
+            self.recon_form_layout.removeRow(0)
+
+        self._recon_config_widgets = {}
+        self._recon_config_meta = {}
+
+        for key, value in config.items():
+            label = QtWidgets.QLabel(key)
+
+            if isinstance(value, bool):
+                widget = QtWidgets.QCheckBox()
+                widget.setChecked(value)
+                self._recon_config_meta[key] = {"type": bool, "is_list": False}
+            elif isinstance(value, (int, float)):
+                widget = QtWidgets.QLineEdit(str(value))
+                if isinstance(value, int):
+                    validator = QtGui.QIntValidator(widget)
+                else:
+                    validator = QtGui.QDoubleValidator(widget)
+                    validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
+                widget.setValidator(validator)
+                self._recon_config_meta[key] = {"type": type(value), "is_list": False}
+            elif isinstance(value, list):
+                widget = QtWidgets.QLineEdit(", ".join(str(item) for item in value))
+                self._recon_config_meta[key] = {"type": list, "is_list": True}
+            else:
+                widget = QtWidgets.QLineEdit(str(value))
+                self._recon_config_meta[key] = {"type": str, "is_list": False}
+
+            self._recon_config_widgets[key] = widget
+            self.recon_form_layout.addRow(label, widget)
     
     def _run_reconstruction(self):
         if self.recon_worker and self.recon_worker.is_running():
@@ -639,6 +707,10 @@ class MainWindow(QtWidgets.QMainWindow):
         env_vars = {}
         if self.save_dir:
             env_vars["ACQ_INPUT_DIR"] = self.save_dir
+            env_vars["RECON_INPUT_DIR"] = self.save_dir
+            env_vars["INPUT_DIR"] = self.save_dir
+            env_vars["INPUT_FOLDER"] = self.save_dir
+            env_vars["SAVE_DIR"] = self.save_dir
         if self.recon_output_dir:
             env_vars["RECON_OUTPUT_DIR"] = self.recon_output_dir
         env_vars["RECON_CONFIG_JSON"] = json.dumps(recon_config)
@@ -647,6 +719,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recon_worker = ReconstructionWorker(main_path, args, env_vars)
         self.recon_worker.finished.connect(self._on_recon_finished)
         self.recon_worker.progress.connect(self._on_recon_progress)
+        self.recon_worker.input_requested.connect(self._on_recon_input_requested)
         self.recon_worker.start()
         
         self.setCursor(QtCore.Qt.BusyCursor)
@@ -663,3 +736,12 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.information(self, "Reconstruction", message)
         else:
             QtWidgets.QMessageBox.critical(self, "Reconstruction", message)
+
+    def _on_recon_input_requested(self, prompt):
+        title = "Reconstruction Input"
+        display_prompt = prompt.strip() if prompt else "Enter value"
+        text, ok = QtWidgets.QInputDialog.getText(self, title, display_prompt)
+        if not ok:
+            text = ""
+        if self.recon_worker:
+            self.recon_worker.send_input_response(text)

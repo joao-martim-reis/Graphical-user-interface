@@ -440,7 +440,7 @@ class AcquisitionWorker(QtCore.QObject):
 # This runs in a SEPARATE PROCESS to allow matplotlib GUI to work
 # ============================================================================
 
-def _reconstruction_process_target(main_path, args, env_vars, result_queue):
+def _reconstruction_process_target(main_path, args, env_vars, result_queue, command_queue):
     """
     Target function for the reconstruction process.
     
@@ -458,6 +458,7 @@ def _reconstruction_process_target(main_path, args, env_vars, result_queue):
     import runpy
     import sys
     import os
+    import builtins
     
     try:
         result_queue.put(("progress", "Setting up environment..."))
@@ -472,12 +473,67 @@ def _reconstruction_process_target(main_path, args, env_vars, result_queue):
             sys.path.insert(0, script_dir)
         
         result_queue.put(("progress", "Running reconstruction script..."))
+
+        # --------------------------------------------------------------------
+        # Redirect stdout/stderr to GUI
+        # --------------------------------------------------------------------
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+
+        class _QueueStream:
+            def __init__(self, queue, stream_name="stdout"):
+                self.queue = queue
+                self.stream_name = stream_name
+                self._buffer = ""
+
+            def write(self, text):
+                if not text:
+                    return 0
+                self._buffer += text
+                while "\n" in self._buffer:
+                    line, self._buffer = self._buffer.split("\n", 1)
+                    if line.strip():
+                        self.queue.put(("log", line))
+                return len(text)
+
+            def flush(self):
+                if self._buffer.strip():
+                    self.queue.put(("log", self._buffer.strip()))
+                self._buffer = ""
+
+        sys.stdout = _QueueStream(result_queue, "stdout")
+        sys.stderr = _QueueStream(result_queue, "stderr")
+
+        # --------------------------------------------------------------------
+        # Redirect input() to GUI
+        # --------------------------------------------------------------------
+        original_input = builtins.input
+
+        def _gui_input(prompt=""):
+            try:
+                result_queue.put(("input_request", prompt))
+                response = command_queue.get()  # blocks until GUI responds
+                if isinstance(response, tuple) and len(response) >= 2 and response[0] == "input_response":
+                    return "" if response[1] is None else str(response[1])
+                if response is None:
+                    return ""
+                return str(response)
+            except Exception:
+                return ""
+
+        builtins.input = _gui_input
         
         # Run the script using runpy (like python script.py)
         argv_backup = sys.argv[:]
         sys.argv = [main_path] + args
-        runpy.run_path(main_path, run_name="__main__")
-        sys.argv = argv_backup
+        try:
+            runpy.run_path(main_path, run_name="__main__")
+        finally:
+            sys.argv = argv_backup
+            # Restore input and streams
+            builtins.input = original_input
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
         
         result_queue.put(("finished", "Reconstruction completed"))
     except Exception as e:
@@ -509,6 +565,7 @@ class ReconstructionWorker(QtCore.QObject):
     """
     finished = QtCore.Signal(bool, str)
     progress = QtCore.Signal(str)
+    input_requested = QtCore.Signal(str)
 
     def __init__(self, main_path, args, env_vars, parent=None):
         """
@@ -524,6 +581,7 @@ class ReconstructionWorker(QtCore.QObject):
         
         self._process = None
         self._result_queue = None
+        self._command_queue = None
         
         # QTimer for polling - same pattern as AcquisitionWorker
         self._poll_timer = QtCore.QTimer(self)
@@ -539,11 +597,12 @@ class ReconstructionWorker(QtCore.QObject):
         
         # Create communication queue
         self._result_queue = MPQueue()
+        self._command_queue = MPQueue()
         
         # Create and start the reconstruction process
         self._process = Process(
             target=_reconstruction_process_target,
-            args=(self.main_path, self.args, self.env_vars, self._result_queue)
+            args=(self.main_path, self.args, self.env_vars, self._result_queue, self._command_queue)
         )
         self._process.start()
         
@@ -570,6 +629,10 @@ class ReconstructionWorker(QtCore.QObject):
                 
                 if msg_type == "progress":
                     self.progress.emit(msg_data)
+                elif msg_type == "log":
+                    self.progress.emit(msg_data)
+                elif msg_type == "input_request":
+                    self.input_requested.emit(msg_data)
                 elif msg_type == "finished":
                     self.finished.emit(True, msg_data)
                     self._cleanup()
@@ -593,3 +656,12 @@ class ReconstructionWorker(QtCore.QObject):
             self._process = None
         
         self._result_queue = None
+        self._command_queue = None
+
+    def send_input_response(self, response):
+        """Send input response back to reconstruction process."""
+        if self._command_queue:
+            try:
+                self._command_queue.put(("input_response", response))
+            except Exception:
+                pass
