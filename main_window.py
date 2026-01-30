@@ -544,7 +544,7 @@ class MainWindow(QtWidgets.QMainWindow):
         root = Path(self.recon_root)
         mapping = {
             "FDK_reduce_memory": root / "FDK_reduce_memory" / "MAIN_TIGRE_FDK_Voxel_size.py",
-            "FDK_iteratives": root / "FDK_iteratives" / "MAIN_TIGRE_iterative.py",
+            "Iteratives": root / "Iteratives" / "MAIN_TIGRE_iterative.py",
             "FBP": root / "FBP" / "TIGRE_fbp1.py"
         }
         
@@ -745,3 +745,17 @@ class MainWindow(QtWidgets.QMainWindow):
             text = ""
         if self.recon_worker:
             self.recon_worker.send_input_response(text)
+    
+    def closeEvent(self, event):
+        """
+        Called when the window is closing.
+        
+        Ensures the serial port is disconnected so other applications
+        (Arduino IDE, PuTTY, etc.) can access the STM32.
+        """
+        if self.serial_handler.is_connected():
+            logging.info("Closing GUI: Disconnecting serial port...")
+            self.serial_handler.disconnect()
+            # Give time for port to be fully released
+            QtCore.QThread.msleep(200)
+        event.accept()

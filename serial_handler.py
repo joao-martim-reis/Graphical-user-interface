@@ -116,9 +116,19 @@ class SerialHandler(QtCore.QObject):
     def disconnect(self):
         """Disconnect from serial port."""
         if self._port.isOpen():
-            self._port.close()
-            logging.info("Serial disconnected")
-            self.connection_changed.emit(False)
+            try:
+                # Clear any pending data before closing
+                self._port.clear()
+                self._port.close()
+                # Small delay to ensure port is fully released
+                QtCore.QThread.msleep(100)
+                logging.info("Serial disconnected")
+            except Exception as e:
+                logging.error(f"Error disconnecting serial port: {e}")
+            finally:
+                self.connection_changed.emit(False)
+                # Reset buffer
+                self._rx_buffer = ""
     
     def send(self, text):
         """
