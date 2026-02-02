@@ -77,7 +77,7 @@ class MainWindow(QtWidgets.QMainWindow):
     3. Batch UI updates to avoid overwhelming the event loop
     """
     
-    def __init__(self, log_queue, acquisition_module_path="", reconstruction_root_path="", defect_map_path=""):
+    def __init__(self, log_queue, acquisition_module_path="", reconstruction_root_path="", defect_map_path="", default_dark_map_path=""):
         super().__init__()
         self.setWindowTitle("CT Acquisition and Reconstruction")
         self.resize(1100, 720)
@@ -86,15 +86,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # ====================================================================
         # PATH CONFIGURATION (passed from main.py)
         # ====================================================================
-        self._acquisition_module_path = acquisition_module_path
-        self._reconstruction_root_path = reconstruction_root_path
-        self._defect_map_path = defect_map_path
+        self._acquisition_module_path = acquisition_module_path  # Path to camera SDK
+        self._reconstruction_root_path = reconstruction_root_path  # Path to reconstruction scripts
+        self._defect_map_path = defect_map_path  # Path to defect map (always loaded)
+        self._default_dark_map_path = default_dark_map_path  # Path to dark map (always loaded)
         
         # ====================================================================
         # APPLICATION STATE
         # ====================================================================
-        self.save_dir = ""          # Directory for acquired images
-        self.dark_map_path = ""     # Path to dark map for correction
+        self.save_dir = ""          # Directory for acquired images (user selects this)
+        self.dark_map_path = self._default_dark_map_path  # Dark map path (auto-loaded)
         self.recon_root = ""        # Root folder for reconstruction scripts
         self.recon_map = {}         # Maps method names to script paths
         self.last_preview_path = "" # Path to last preview image
@@ -194,30 +195,27 @@ class MainWindow(QtWidgets.QMainWindow):
         
         # Labels
         self.save_dir_label = QtWidgets.QLabel("Save folder not selected")
-        self.dark_map_label = QtWidgets.QLabel("Dark map not selected")
+        
+        # Info label showing that dark map is auto-loaded
+        self.dark_map_info = QtWidgets.QLabel(f"Dark map: Auto-loaded from config")
+        self.dark_map_info.setStyleSheet("color: gray; font-style: italic;")
         
         # Buttons
         select_save_btn = QtWidgets.QPushButton("Select save folder")
-        select_dark_btn = QtWidgets.QPushButton("Select dark map")
-        preview_btn = QtWidgets.QPushButton("Preview only")
         start_btn = QtWidgets.QPushButton("Start acquisition")
         stop_btn = QtWidgets.QPushButton("Stop")
         
         # Connect signals
         select_save_btn.clicked.connect(self._select_save_folder)
-        select_dark_btn.clicked.connect(self._select_dark_map)
-        preview_btn.clicked.connect(self._run_preview)
         start_btn.clicked.connect(self._start_acquisition)
         stop_btn.clicked.connect(self._stop_acquisition)
         
         # Layout
         layout.addWidget(select_save_btn, 0, 0)
         layout.addWidget(self.save_dir_label, 0, 1)
-        layout.addWidget(select_dark_btn, 1, 0)
-        layout.addWidget(self.dark_map_label, 1, 1)
-        layout.addWidget(preview_btn, 2, 0)
-        layout.addWidget(start_btn, 2, 1)
-        layout.addWidget(stop_btn, 2, 2)
+        layout.addWidget(self.dark_map_info, 1, 0, 1, 2)
+        layout.addWidget(start_btn, 2, 0)
+        layout.addWidget(stop_btn, 2, 1)
         
         return group
     
@@ -226,33 +224,26 @@ class MainWindow(QtWidgets.QMainWindow):
         group = QtWidgets.QGroupBox("Serial Control (STM32)")
         layout = QtWidgets.QGridLayout(group)
         
-        # Widgets
+        # Widgets - simplified to just port selection and connect button
         self.serial_port_combo = QtWidgets.QComboBox()
         self.serial_refresh_btn = QtWidgets.QPushButton("Refresh")
-        self.serial_baud_combo = QtWidgets.QComboBox()
-        self.serial_baud_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
-        self.serial_baud_combo.setCurrentText("115200")
         self.serial_connect_btn = QtWidgets.QPushButton("Connect")
-        self.serial_input = QtWidgets.QLineEdit()
-        self.serial_input.setPlaceholderText("Type command and press Enter")
-        self.serial_send_btn = QtWidgets.QPushButton("Send")
+        
+        # Status label to show connection state and auto-commands
+        self.serial_status_label = QtWidgets.QLabel("Not connected")
+        self.serial_status_label.setStyleSheet("color: gray; font-style: italic;")
         
         # Connect signals
         self.serial_refresh_btn.clicked.connect(self._refresh_serial_ports)
         self.serial_connect_btn.clicked.connect(self._toggle_serial_connection)
-        self.serial_send_btn.clicked.connect(self._send_serial_text)
-        self.serial_input.returnPressed.connect(self._send_serial_text)
         
-        # Layout
+        # Layout - simplified grid
         layout.addWidget(QtWidgets.QLabel("Port"), 0, 0)
         layout.addWidget(self.serial_port_combo, 0, 1)
         layout.addWidget(self.serial_refresh_btn, 0, 2)
-        layout.addWidget(QtWidgets.QLabel("Baud"), 1, 0)
-        layout.addWidget(self.serial_baud_combo, 1, 1)
-        layout.addWidget(self.serial_connect_btn, 1, 2)
-        layout.addWidget(QtWidgets.QLabel("Send"), 2, 0)
-        layout.addWidget(self.serial_input, 2, 1)
-        layout.addWidget(self.serial_send_btn, 2, 2)
+        layout.addWidget(self.serial_connect_btn, 0, 3)
+        layout.addWidget(QtWidgets.QLabel("Status"), 1, 0)
+        layout.addWidget(self.serial_status_label, 1, 1, 1, 3)
         
         return group
     
@@ -391,52 +382,43 @@ class MainWindow(QtWidgets.QMainWindow):
     # ========================================================================
     
     def _select_save_folder(self):
+        # Open a folder selection dialog
         path = QtWidgets.QFileDialog.getExistingDirectory(self, "Select save folder")
-        if path:
-            self.save_dir = os.path.normpath(path)
-            self.save_dir_label.setText(self.save_dir)
-            # Update reconstruction input label
+        if path:  # If user selected a folder (didn't cancel)
+            self.save_dir = os.path.normpath(path)  # Normalize the path
+            self.save_dir_label.setText(self.save_dir)  # Update label to show path
+            # Update reconstruction input label to show this is where images will be
             self.recon_input_label.setText(f"Input: {self.save_dir}")
             self.recon_input_label.setStyleSheet("")  # Remove gray italic style
     
-    def _select_dark_map(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Select dark map", "",
-            "TIFF files (*.tif *.tiff);;All files (*.*)"
-        )
-        if path:
-            self.dark_map_path = os.path.normpath(path)
-            self.dark_map_label.setText(self.dark_map_path)
-    
-    def _run_preview(self):
-        if not self.save_dir:
-            QtWidgets.QMessageBox.warning(self, "Missing data", "Select a save folder first")
-            return
-        if self.acq_worker and self.acq_worker.is_running():
-            return
-        
-        self._start_acq_worker(preview_only=True)
-    
     def _start_acquisition(self):
+        # Check if user selected a save folder first
         if not self.save_dir:
             QtWidgets.QMessageBox.warning(self, "Missing data", "Select a save folder first")
             return
+        # Check if acquisition is already running
         if self.acq_worker and self.acq_worker.is_running():
             return
         
+        # Start the acquisition worker (full acquisition, not preview)
         self._start_acq_worker(preview_only=False)
     
     def _start_acq_worker(self, preview_only):
         """Create and start the acquisition worker."""
+        # Create a new AcquisitionWorker object
+        # This class manages the acquisition process (camera operations)
         self.acq_worker = AcquisitionWorker(
-            self,
-            acquisition_module_path=self._acquisition_module_path,
-            defect_map_path=self._defect_map_path
+            self,  # Parent widget
+            acquisition_module_path=self._acquisition_module_path,  # Path to camera SDK
+            defect_map_path=self._defect_map_path  # Path to defect map for image correction
         )
-        self.acq_worker.preview_ready.connect(self._show_preview)
-        self.acq_worker.finished.connect(self._on_acq_finished)
-        self.acq_worker.progress.connect(self._on_acq_progress)
-        self.acq_worker.started_work.connect(self._on_acq_started)
+        # Connect Qt signals to our handler methods
+        # When the worker emits a signal, our method gets called
+        self.acq_worker.preview_ready.connect(self._show_preview)  # When preview image is ready
+        self.acq_worker.finished.connect(self._on_acq_finished)  # When acquisition completes/fails
+        self.acq_worker.progress.connect(self._on_acq_progress)  # When progress updates arrive
+        self.acq_worker.started_work.connect(self._on_acq_started)  # When acquisition starts
+        # Start the worker with our parameters
         self.acq_worker.start(self.save_dir, self.dark_map_path, preview_only)
     
     def _stop_acquisition(self):
@@ -452,31 +434,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self.statusBar().showMessage("Acquisition in progress...")
     
     def _on_acq_progress(self, message):
-        # Show truncated message in status bar (max 80 chars)
+        # Truncate long messages for status bar (max 80 characters)
         status_msg = message[:80] + "..." if len(message) > 80 else message
-        self.statusBar().showMessage(status_msg)
-        # Log full message to log view
+        self.statusBar().showMessage(status_msg)  # Update bottom status bar
+        # Log full message to log view (not truncated)
         logging.info(message)
         
-        # Send OK via serial when acquisition loop starts (to start the motor)
+        # Auto-send OK command to motor when acquisition starts
+        # This tells the motor to start rotating for CT scan
         if "MAIN ACQUISITION STARTED" in message:
             if self.serial_handler.is_connected():
-                self.serial_handler.send("OK")
+                self.serial_handler.send("OK")  # Send "OK" + newline to STM32
                 logging.info("Sent OK command to start motor")
     
     def _on_acq_finished(self, ok, message):
+        # Restore normal cursor (no longer busy)
         self.setCursor(QtCore.Qt.ArrowCursor)
+        # Clear the status bar message
         self.statusBar().clearMessage()
-        if ok:
+        # Show popup dialog with result
+        if ok:  # If acquisition succeeded
             QtWidgets.QMessageBox.information(self, "Acquisition", message)
-        else:
+        else:  # If acquisition failed
             QtWidgets.QMessageBox.critical(self, "Acquisition", message)
     
     def _show_preview(self, preview_path):
         """Show preview image (if preview label exists)."""
+        # Check if preview file actually exists
         if not preview_path or not os.path.exists(preview_path):
             return
+        # Store the path (could be used to display image later)
         self.last_preview_path = preview_path
+        # Log that preview was saved
         logging.info(f"Preview saved: {preview_path}")
     
     # ========================================================================
@@ -484,38 +473,43 @@ class MainWindow(QtWidgets.QMainWindow):
     # ========================================================================
     
     def _refresh_serial_ports(self):
+        # Clear the dropdown menu
         self.serial_port_combo.clear()
+        # Get list of available serial ports from the system
         ports = self.serial_handler.get_available_ports()
-        if ports:
-            self.serial_port_combo.addItems(ports)
-        else:
+        if ports:  # If any ports found
+            self.serial_port_combo.addItems(ports)  # Add them to dropdown
+        else:  # No ports found
             self.serial_port_combo.addItem("No ports found")
     
     def _toggle_serial_connection(self):
+        # If already connected, disconnect
         if self.serial_handler.is_connected():
             self.serial_handler.disconnect()
         else:
+            # Get the selected port name from the dropdown
             port_name = self.serial_port_combo.currentText()
             if not port_name or port_name == "No ports found":
                 QtWidgets.QMessageBox.warning(self, "Serial", "No serial port selected")
                 return
-            baud_rate = int(self.serial_baud_combo.currentText())
-            if not self.serial_handler.connect(port_name, baud_rate):
+            # Use fixed baud rate of 115200 (standard for STM32)
+            if not self.serial_handler.connect(port_name, 115200):
                 QtWidgets.QMessageBox.warning(self, "Serial", f"Failed to open {port_name}")
     
     def _on_serial_connection_changed(self, connected):
+        # Update button text based on connection state
         self.serial_connect_btn.setText("Disconnect" if connected else "Connect")
-    
-    def _send_serial_text(self):
-        if not self.serial_handler.is_connected():
-            QtWidgets.QMessageBox.warning(self, "Serial", "Serial port not connected")
-            return
-        text = self.serial_input.text().strip()
-        if text:
-            self.serial_handler.send(text)
-            self.serial_input.clear()
+        # Update status label
+        if connected:
+            port_name = self.serial_port_combo.currentText()
+            self.serial_status_label.setText(f"Connected to {port_name} - Auto-sends OK/STOP")
+            self.serial_status_label.setStyleSheet("color: green;")
+        else:
+            self.serial_status_label.setText("Not connected")
+            self.serial_status_label.setStyleSheet("color: gray; font-style: italic;")
     
     def _on_serial_message(self, message):
+        # Log all messages received from STM32
         logging.info(f"[SERIAL] {message}")
     
     # ========================================================================

@@ -106,7 +106,17 @@ class SerialHandler(QtCore.QObject):
         
         # Attempt to open the port
         if self._port.open(QtCore.QIODevice.OpenModeFlag.ReadWrite):
-            logging.info(f"Serial connected: {port_name} @ {baud_rate}")
+            # =================================================================
+            # CRITICAL FIX: PREVENT STM32 RESET
+            # =================================================================
+            # By default, opening a serial port can toggle DTR/RTS lines.
+            # On Nucleo/STM32 boards, DTR is often tied to the RESET pin.
+            # If DTR is asserted (True), the board is held in RESET state,
+            # preventing code execution and blocking ST-LINK flashing.
+            self._port.setDataTerminalReady(False)
+            self._port.setRequestToSend(False)
+            
+            logging.info(f"Serial connected: {port_name} @ {baud_rate} (DTR/RTS disabled)")
             self.connection_changed.emit(True)
             return True
         else:
@@ -120,7 +130,7 @@ class SerialHandler(QtCore.QObject):
                 # Clear any pending data before closing
                 self._port.clear()
                 self._port.close()
-                # Small delay to ensure port is fully released
+                # Small delay to ensure port is fully released by OS
                 QtCore.QThread.msleep(100)
                 logging.info("Serial disconnected")
             except Exception as e:
@@ -183,17 +193,23 @@ class SerialHandler(QtCore.QObject):
         
         # If no complete line yet, wait for more data
         if "\n" not in self._rx_buffer:
-            # Prevent buffer from growing too large
+            # Prevent buffer from growing too large (safety mechanism)
             if len(self._rx_buffer) > 4096:
                 self._rx_buffer = self._rx_buffer[-4096:]
             return
         
+        # Extract lines
         lines = self._rx_buffer.splitlines()
+        
+        # Handle the buffer remainder
         if not self._rx_buffer.endswith("\n"):
+            # Last part is incomplete, keep it in buffer
             self._rx_buffer = lines.pop() if lines else ""
         else:
+            # All parts are complete lines
             self._rx_buffer = ""
         
+        # Emit signal for each complete line
         for line in lines:
             if line:
                 self.message_received.emit(line)

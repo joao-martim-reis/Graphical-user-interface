@@ -723,3 +723,89 @@
 30-01-2026: 15:08:02.202: [INF] sphinxSDK: Finished heartbeat thread
 30-01-2026: 15:08:02.203: [INF] sphinxSDK: Closing device
 30-01-2026: 15:08:02.347: [INF] sphinxSDK: Successfully closed camera
+02-02-2026: 14:33:33.030: [INF] sphinxSDK: ----------**********----------
+02-02-2026: 14:33:33.031: [INF] sphinxSDK: Device constructor called
+02-02-2026: 14:33:33.031: [INF] sphinxSDK: SLSDK version number: 2.2.15.0
+02-02-2026: 14:33:33.032: [INF] sphinxSDK: SLDeviceLib.dll version: 2.2.15.0
+02-02-2026: 14:33:33.032: [INF] sphinxSDK: SLImage.dll version: 2.2.15.0
+02-02-2026: 14:33:33.033: [INF] sphinxSDK: SLHelperLibrary.dll version: 2.2.15.0
+02-02-2026: 14:33:33.033: [INF] sphinxSDK: SLDefectCorrection.dll version: 2.2.15.0
+02-02-2026: 14:33:33.034: [INF] sphinxSDK: SLInterfaceSphinx.dll version: 2.2.15.0
+02-02-2026: 14:33:33.034: [INF] sphinxSDK: SphinxLib.dll version: 2.7.2.0
+02-02-2026: 14:33:33.035: [INF] sphinxSDK: Opening camera
+02-02-2026: 14:33:33.035: [INF] sphinxSDK: Discovering devices
+02-02-2026: 14:33:34.153: [INF] sphinxSDK: Found 1 devices
+02-02-2026: 14:33:34.154: [INF] sphinxSDK: Selecting device: 1
+02-02-2026: 14:33:34.154: [INF] sphinxSDK: Device AdapterIP: 169.254.239.156
+02-02-2026: 14:33:34.154: [INF] sphinxSDK: Device AdapterMask: 255.255.0.0
+02-02-2026: 14:33:34.154: [INF] sphinxSDK: Device IP: 169.254.123.86
+02-02-2026: 14:33:34.155: [INF] sphinxSDK: Device PortCtrl: 0
+02-02-2026: 14:33:34.155: [INF] sphinxSDK: Device PortData: 0
+02-02-2026: 14:33:34.155: [INF] sphinxSDK: Device PortMessage: 0
+02-02-2026: 14:33:34.155: [INF] sphinxSDK: Device MAC Address: 8C-1F-64-57-D0-00
+02-02-2026: 14:33:34.156: [INF] sphinxSDK: Adapter Name: {A6CAE302-CE33-49EB-A434-3EF1CDA50AA1}
+02-02-2026: 14:33:34.156: [INF] sphinxSDK: Connection OK
+02-02-2026: 14:33:34.213: [INF] sphinxSDK: Initialised device
+02-02-2026: 14:33:34.415: [INF] sphinxSDK: Maximal packet size: 15408
+02-02-2026: 14:33:34.454: [INF] sphinxSDK: Initialised filter driver
+02-02-2026: 14:33:34.454: [INF] sphinxSDK: Filter driver version: 2.7.3
+02-02-2026: 14:33:34.456: [INF] sphinxSDK: Read 0 from video_gcsr
+02-02-2026: 14:33:34.456: [INF] sphinxSDK: Starting heartbeat thread
+02-02-2026: 14:33:34.483: [INF] sphinxSDK: Detector type: 12289, variant: 2
+02-02-2026: 14:33:34.484: [INF] sphinxSDK: Model Code: CL10G_PS1412_GIGE
+02-02-2026: 14:33:34.484: [INF] sphinxSDK: Number of sensors in array: 1
+02-02-2026: 14:33:34.485: [INF] sphinxSDK: Number of temperature sensors: 1
+02-02-2026: 14:33:34.485: [INF] sphinxSDK: Device image rounder: 4
+02-02-2026: 14:33:34.485: [INF] sphinxSDK: Successfully configured as: Default
+02-02-2026: 14:33:34.491: [INF] sphinxSDK: Calculated dimensions from registers 69 and 68: 2802x2400
+02-02-2026: 14:33:34.496: [INF] sphinxSDK: Calculated raw dimensions from registers 71 and 70: 2804x2400
+02-02-2026: 14:33:34.498: [INF] sphinxSDK: Device Model Number: 1412
+02-02-2026: 14:33:34.506: [INF] sphinxSDK: Device Serial Number: 1194
+02-02-2026: 14:33:34.511: [INF] sphinxSDK: Device FW: 1.0.13
+02-02-2026: 14:33:34.513: [INF] sphinxSDK: Setting sync direction to in
+02-02-2026: 14:33:34.516: [INF] sphinxSDK: Setting exposure mode to unknown
+02-02-2026: 14:33:34.522: [INF] sphinxSDK: Set register 0 to 2144
+02-02-2026: 14:33:34.522: [INF] sphinxSDK: Resetting exposure time to 1000 us after changing exposure mode
+02-02-2026: 14:33:34.523: [INF] sphinxSDK: Setting exposure time
+02-02-2026: 14:33:34.523: [INF] sphinxSDK: Getting exposure mode
+02-02-2026: 14:33:34.526: [INF] sphinxSDK: Got exposure mode: unknown
+02-02-2026: 14:33:34.531: [INF] sphinxSDK: Set exposure time to 1000 us
+02-02-2026: 14:33:34.656: [INF] sphinxSDK: Setting exposure mode to xfps_mode
+02-02-2026: 14:33:34.661: [INF] sphinxSDK: Set register 0 to 2176
+02-02-2026: 14:33:34.661: [INF] sphinxSDK: Resetting exposure time to 1000 us after changing exposure mode
+02-02-2026: 14:33:34.661: [INF] sphinxSDK: Setting exposure time
+02-02-2026: 14:33:34.662: [INF] sphinxSDK: Getting exposure mode
+02-02-2026: 14:33:34.663: [INF] sphinxSDK: Got exposure mode: xfps_mode
+02-02-2026: 14:33:34.668: [INF] sphinxSDK: Set exposure time to 1000 us
+02-02-2026: 14:33:34.669: [INF] sphinxSDK: Setting exposure time
+02-02-2026: 14:33:34.669: [INF] sphinxSDK: Getting exposure mode
+02-02-2026: 14:33:34.671: [INF] sphinxSDK: Got exposure mode: xfps_mode
+02-02-2026: 14:33:34.676: [INF] sphinxSDK: Set exposure time to 2000000 us
+02-02-2026: 14:33:34.677: [INF] sphinxSDK: Calling StartStream
+02-02-2026: 14:33:34.681: [INF] sphinxSDK: Calculated dimensions from registers 69 and 68: 2802x2400
+02-02-2026: 14:33:34.686: [INF] sphinxSDK: Calculated raw dimensions from registers 71 and 70: 2804x2400
+02-02-2026: 14:33:34.941: [INF] sphinxSDK: Starting acquisition thread
+02-02-2026: 14:33:34.946: [INF] sphinxSDK: Device started streaming
+02-02-2026: 14:33:37.053: [INF] sphinxSDK: Calling StopStream
+02-02-2026: 14:33:37.994: [INF] sphinxSDK: Ended acquisition thread
+02-02-2026: 14:33:38.107: [INF] sphinxSDK: Stream stopped
+02-02-2026: 14:33:38.111: [INF] sphinxSDK: Setting sync direction to in
+02-02-2026: 14:33:38.114: [INF] sphinxSDK: Setting exposure mode to unknown
+02-02-2026: 14:33:38.118: [INF] sphinxSDK: Set register 0 to 2144
+02-02-2026: 14:33:38.118: [INF] sphinxSDK: Resetting exposure time to 2000000 us after changing exposure mode
+02-02-2026: 14:33:38.119: [INF] sphinxSDK: Setting exposure time
+02-02-2026: 14:33:38.119: [INF] sphinxSDK: Getting exposure mode
+02-02-2026: 14:33:38.121: [INF] sphinxSDK: Got exposure mode: unknown
+02-02-2026: 14:33:38.126: [INF] sphinxSDK: Set exposure time to 2000000 us
+02-02-2026: 14:33:38.127: [INF] sphinxSDK: Calling StartStream
+02-02-2026: 14:33:38.136: [INF] sphinxSDK: Calculated dimensions from registers 69 and 68: 2802x2400
+02-02-2026: 14:33:38.141: [INF] sphinxSDK: Calculated raw dimensions from registers 71 and 70: 2804x2400
+02-02-2026: 14:33:38.338: [INF] sphinxSDK: Starting acquisition thread
+02-02-2026: 14:33:38.343: [INF] sphinxSDK: Device started streaming
+02-02-2026: 14:33:58.360: [INF] sphinxSDK: Calling StopStream
+02-02-2026: 14:33:58.471: [INF] sphinxSDK: Ended acquisition thread
+02-02-2026: 14:33:58.554: [INF] sphinxSDK: Stream stopped
+02-02-2026: 14:33:58.559: [INF] sphinxSDK: Closing camera
+02-02-2026: 14:33:58.600: [INF] sphinxSDK: Finished heartbeat thread
+02-02-2026: 14:33:58.601: [INF] sphinxSDK: Closing device
+02-02-2026: 14:33:58.683: [INF] sphinxSDK: Successfully closed camera

@@ -87,7 +87,7 @@ import multiprocessing
 
 from PySide6 import QtWidgets
 
-from config import LOG_MIRROR_ENABLED, LOG_MAX_QUEUE_SIZE
+from config import LOG_MAX_QUEUE_SIZE, DEFAULT_DARK_MAP_PATH
 from logging_utils import ThreadSafeLogQueue, setup_logging
 from main_window import MainWindow
 
@@ -117,7 +117,7 @@ def main():
     # The log_queue allows background processes to send log messages
     # to the GUI without causing threading issues
     log_queue = ThreadSafeLogQueue(max_size=LOG_MAX_QUEUE_SIZE)
-    setup_logging(log_queue, mirror_to_gui=LOG_MIRROR_ENABLED)
+    setup_logging(log_queue)
     
     # Create and show the main window
     # Pass the log_queue so the window can display messages from workers
@@ -126,7 +126,8 @@ def main():
         log_queue,
         acquisition_module_path=ACQUISITION_MODULE_PATH,
         reconstruction_root_path=RECONSTRUCTION_ROOT_PATH,
-        defect_map_path=DEFECT_MAP_PATH
+        defect_map_path=DEFECT_MAP_PATH,
+        default_dark_map_path=DEFAULT_DARK_MAP_PATH
     )
     window.show()
     
