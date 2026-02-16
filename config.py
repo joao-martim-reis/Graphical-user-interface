@@ -24,6 +24,29 @@ DEFAULT_DARK_MAP_PATH = r"C:\Users\joaomartimreis\Desktop\Joao_CT\Dark_map\DARK_
 # Root folder containing reconstruction algorithm scripts
 DEFAULT_RECON_ROOT = r"C:\Users\joaomartimreis\Desktop\Joao_CT\Reconstruction_Algorithms\MAIN_reconstruction_algorithms"
 
+# Path to calibration script (runs before reconstruction to calculate shift)
+CALIBRATION_SCRIPT_PATH = r"C:\Users\joaomartimreis\Desktop\Joao_CT\Reconstruction_Algorithms\MAIN_reconstruction_algorithms\Calibration\calibration_main.py"
+
+
+# ============================================================================
+# MOTOR CONFIGURATION SETTINGS (for CONFIG command to STM32)
+# ============================================================================
+# These are the default values shown in the motor configuration dialog
+# User can change them before sending CONFIG command to the firmware
+
+MOTOR_CONFIG_DEFAULTS = {
+    "projections": 800,      # Number of projections for full rotation
+    "high_time_ms": 400,     # Trigger HIGH duration in milliseconds
+    "low_time_ms": 100       # Trigger LOW duration in milliseconds
+}
+
+# Valid ranges for motor configuration parameters
+# These enforce the firmware's acceptable ranges
+MOTOR_CONFIG_RANGES = {
+    "projections": (10, 3600),      # Min: 10, Max: 3600
+    "high_time_ms": (10, 5000),     # Min: 10 ms, Max: 5000 ms
+    "low_time_ms": (10, 5000)       # Min: 10 ms, Max: 5000 ms
+}
 
 
 # Default config for FDK (Feldkamp-Davis-Kress) and iterative methods
@@ -88,3 +111,19 @@ ITERATIVE_ALGORITHMS = [
     "ASD_POCS",
     "AWASD_POCS"
 ]
+
+# Default iterations for each iterative algorithm
+# Keep it simple - just control the number of iterations
+# More complex parameters can be added to DEFAULT_RECON_CONFIG if needed
+ITERATIVE_ALGORITHM_ITERATIONS = {
+    "SIRT": 50,
+    "CGLS": 20,
+    "LSQR": 20,
+    "LSMR": 20,
+    "OSSART": 40,
+    "SART": 30,
+    "OSSART_TV": 50,
+    "SART_TV": 50,
+    "ASD_POCS": 50,
+    "AWASD_POCS": 50
+}

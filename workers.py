@@ -5,9 +5,6 @@ Background Workers for Acquisition and Reconstruction
 This module contains the worker classes that run heavy tasks in the background
 WITHOUT freezing the GUI.
 
-================================================================================
-THE FREEZING PROBLEM AND SOLUTION
-================================================================================
 
 PROBLEM: Why did the GUI freeze?
 --------------------------------
@@ -67,15 +64,8 @@ from multiprocessing import Process, Queue as MPQueue
 
 from PySide6 import QtCore
 
-# Note: ACQUISITION_MODULE_PATH and DEFAULT_DEFECT_MAP_PATH are now passed
-# as parameters from main_window.py, which gets them from main.py
-# This makes it easier to configure paths in one place (main.py)
 
-
-# ============================================================================
-# ACQUISITION PROCESS
 # This code runs in a COMPLETELY SEPARATE process from the GUI!
-# ============================================================================
 
 class QueueLogHandler(logging.Handler):
     """
@@ -113,14 +103,10 @@ def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_qu
     - Can block indefinitely without affecting the GUI
     - Communicates with GUI only through queues
     
-    Args:
-        save_dir: Directory to save acquired images
-        dark_map_path: Path to dark map for correction (or empty string)
-        preview_only: If True, only capture preview, don't run full acquisition
+    Important Args:
         result_queue: Queue to send results/progress TO the GUI
         command_queue: Queue to receive commands FROM the GUI (e.g., "stop")
-        acquisition_module_path: Path to camera SDK modules
-        defect_map_path: Path to defect map for image correction
+
     """
     # ========================================================================
     # SETUP LOGGING
@@ -182,10 +168,9 @@ def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_qu
             pass
         return False
     
-    # ========================================================================
+
     # MAIN ACQUISITION LOGIC
-    # This is where the actual camera work happens
-    # ========================================================================
+
     try:
         logging.info("Opening camera...")
         camera_device = open_camera()
@@ -246,10 +231,7 @@ def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_qu
         )
         
         if stats:
-            # ================================================================
-            # DELETE PREVIEW AND FIRST IMAGE
             # These are test images that should not be included in reconstruction
-            # ================================================================
             logging.info("Cleaning up preview and first test image...")
             
             # Delete the preview image if it exists
@@ -284,11 +266,6 @@ def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_qu
             except:
                 pass
 
-
-# ============================================================================
-# ACQUISITION WORKER (GUI-side)
-# This class runs in the GUI process and manages the acquisition process
-# ============================================================================
 
 class AcquisitionWorker(QtCore.QObject):
     """
@@ -335,9 +312,7 @@ class AcquisitionWorker(QtCore.QObject):
     def start(self, save_dir, dark_map_path, preview_only=False):
         """
         Start the acquisition in a separate process.
-        
-        This method returns immediately - it does NOT wait for acquisition
-        to complete. The GUI remains responsive.
+
         """
         if self._is_running:
             return
@@ -449,11 +424,7 @@ def _reconstruction_process_target(main_path, args, env_vars, result_queue, comm
     - Matplotlib GUI works correctly (it's the "main" thread of this process)
     - Can show interactive windows for ROI selection, etc.
     
-    Args:
-        main_path: Path to the reconstruction script to run
-        args: Command line arguments to pass
-        env_vars: Environment variables (config, paths, etc.)
-        result_queue: Queue to send progress/results back to GUI
+
     """
     import runpy
     import sys
@@ -665,3 +636,230 @@ class ReconstructionWorker(QtCore.QObject):
                 self._command_queue.put(("input_response", response))
             except Exception:
                 pass
+
+
+# ============================================================================
+# CALIBRATION PROCESS TARGET
+# Runs calibration script to calculate shift value
+# ============================================================================
+
+def _calibration_process_target(calibration_script, input_folder, result_queue):
+    """
+    Target function for the calibration process.
+    
+    THIS RUNS IN A COMPLETELY SEPARATE PROCESS!
+    - Runs the calibration script
+    - Captures all output (stdout and stderr)
+    - Tries to find the shift value in the output
+    - Returns the shift value to GUI
+    """
+    import runpy
+    import sys
+    import os
+    import re
+    
+    try:
+        result_queue.put(("progress", "Starting calibration..."))
+        
+        # Set input folder as environment variable for calibration script
+        if input_folder:
+            os.environ["INPUT_FOLDER"] = input_folder
+            os.environ["INPUT_DIR"] = input_folder
+        
+        # Add script directory to Python path
+        script_dir = os.path.dirname(calibration_script)
+        if script_dir and script_dir not in sys.path:
+            sys.path.insert(0, script_dir)
+        
+        result_queue.put(("progress", "Running calibration script..."))
+        
+        # --------------------------------------------------------------------
+        # Capture all output to find the shift value
+        # --------------------------------------------------------------------
+        captured_output = []  # Store all output lines
+        
+        class _CaptureStream:
+            def __init__(self, queue):
+                self.queue = queue
+                self._buffer = ""
+            
+            def write(self, text):
+                if not text:
+                    return 0
+                self._buffer += text
+                while "\n" in self._buffer:
+                    line, self._buffer = self._buffer.split("\n", 1)
+                    if line.strip():
+                        captured_output.append(line)  # Store for later parsing
+                        self.queue.put(("log", line))
+                return len(text)
+            
+            def flush(self):
+                if self._buffer.strip():
+                    captured_output.append(self._buffer.strip())
+                    self.queue.put(("log", self._buffer.strip()))
+                self._buffer = ""
+        
+        original_stdout = sys.stdout
+        original_stderr = sys.stderr
+        sys.stdout = _CaptureStream(result_queue)
+        sys.stderr = _CaptureStream(result_queue)
+        
+        # Run the calibration script
+        try:
+            runpy.run_path(calibration_script, run_name="__main__")
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+        
+        result_queue.put(("progress", "Parsing calibration results..."))
+        
+        # --------------------------------------------------------------------
+        # Try to find shift value in output
+        # Look for patterns like: "shift = 5.12" or "calculated_shift: 5.12"
+        # --------------------------------------------------------------------
+        shift_value = None
+        
+        # Common patterns for shift value in output
+        patterns = [
+            r'shift[_\s]*=[\s:]*([-+]?\d+\.?\d*)',  # shift = 5.12 or shift: 5.12
+            r'calculated[_\s]*shift[\s:=]*([-+]?\d+\.?\d*)',  # calculated_shift = 5.12
+            r'calibrated[_\s]*shift[\s:=]*([-+]?\d+\.?\d*)',  # calibrated_shift = 5.12
+            r'final[_\s]*shift[\s:=]*([-+]?\d+\.?\d*)',  # final_shift = 5.12
+        ]
+        
+        # Search through all captured output
+        for line in captured_output:
+            for pattern in patterns:
+                match = re.search(pattern, line, re.IGNORECASE)
+                if match:
+                    try:
+                        shift_value = float(match.group(1))
+                        result_queue.put(("log", f"[CALIBRATION] Found shift value: {shift_value}"))
+                        break
+                    except:
+                        continue
+            if shift_value is not None:
+                break
+        
+        # Return result
+        if shift_value is not None:
+            result_queue.put(("shift_found", shift_value))
+            result_queue.put(("finished", f"Calibration completed. Shift value: {shift_value}"))
+        else:
+            result_queue.put(("shift_not_found", "Could not extract shift value from calibration output"))
+            result_queue.put(("finished", "Calibration completed, but shift value not found in output"))
+    
+    except Exception as e:
+        result_queue.put(("error", f"Calibration failed: {e}"))
+
+
+# ============================================================================
+# CALIBRATION WORKER (GUI-side)
+# ============================================================================
+
+class CalibrationWorker(QtCore.QObject):
+    """
+    Manages the calibration process from the GUI side.
+    
+    Simple worker that:
+    1. Runs calibration script in separate process
+    2. Captures output and looks for shift value
+    3. Returns shift value to GUI
+    
+    Signals:
+        finished(bool, str): Emitted when calibration ends
+        progress(str): Emitted for status updates
+        shift_found(float): Emitted when shift value is found
+    """
+    finished = QtCore.Signal(bool, str)
+    progress = QtCore.Signal(str)
+    shift_found = QtCore.Signal(float)
+    
+    def __init__(self, calibration_script, input_folder="", parent=None):
+        """
+        Args:
+            calibration_script: Path to calibration_main.py
+            input_folder: Input folder with images (optional)
+        """
+        super().__init__(parent)
+        self.calibration_script = calibration_script
+        self.input_folder = input_folder
+        
+        self._process = None
+        self._result_queue = None
+        
+        # QTimer for polling
+        self._poll_timer = QtCore.QTimer(self)
+        self._poll_timer.setInterval(100)
+        self._poll_timer.timeout.connect(self._poll_results)
+        
+        self._is_running = False
+    
+    def start(self):
+        """Start the calibration in a separate process."""
+        if self._is_running:
+            return
+        
+        # Create communication queue
+        self._result_queue = MPQueue()
+        
+        # Create and start the calibration process
+        self._process = Process(
+            target=_calibration_process_target,
+            args=(self.calibration_script, self.input_folder, self._result_queue)
+        )
+        self._process.start()
+        
+        self._is_running = True
+        self._poll_timer.start()
+    
+    def is_running(self):
+        return self._is_running
+    
+    def _poll_results(self):
+        """Poll the result queue for messages from the calibration process."""
+        if not self._result_queue:
+            return
+        
+        # Check if process is still alive
+        if self._process and not self._process.is_alive():
+            self._cleanup()
+            return
+        
+        # Process all available messages
+        while True:
+            try:
+                msg_type, msg_data = self._result_queue.get_nowait()
+                
+                if msg_type == "progress":
+                    self.progress.emit(msg_data)
+                elif msg_type == "log":
+                    self.progress.emit(msg_data)
+                elif msg_type == "shift_found":
+                    self.shift_found.emit(msg_data)
+                elif msg_type == "shift_not_found":
+                    self.progress.emit(msg_data)
+                elif msg_type == "finished":
+                    self.finished.emit(True, msg_data)
+                    self._cleanup()
+                    return
+                elif msg_type == "error":
+                    self.finished.emit(False, msg_data)
+                    self._cleanup()
+                    return
+            except:
+                break
+    
+    def _cleanup(self):
+        """Clean up process resources."""
+        self._poll_timer.stop()
+        self._is_running = False
+        
+        if self._process:
+            self._process.join(timeout=2)
+            if self._process.is_alive():
+                self._process.terminate()
+            self._process = None
+        
+        self._result_queue = None

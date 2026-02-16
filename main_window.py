@@ -51,12 +51,16 @@ from config import (
     DEFAULT_RECON_CONFIG,
     FBP_RECON_CONFIG,
     ITERATIVE_ALGORITHMS,
+    ITERATIVE_ALGORITHM_ITERATIONS,
     LOG_FLUSH_INTERVAL_MS,
     LOG_MAX_ITEMS_PER_FLUSH,
     LOG_VIEW_MAX_BLOCKS,
+    MOTOR_CONFIG_DEFAULTS,
+    MOTOR_CONFIG_RANGES,
+    CALIBRATION_SCRIPT_PATH,
 )
 from logging_utils import ThreadSafeLogQueue
-from workers import AcquisitionWorker, ReconstructionWorker
+from workers import AcquisitionWorker, ReconstructionWorker, CalibrationWorker
 from serial_handler import SerialHandler
 
 
@@ -99,6 +103,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recon_root = ""        # Root folder for reconstruction scripts
         self.recon_map = {}         # Maps method names to script paths
         self.last_preview_path = "" # Path to last preview image
+        self.recon_input_override = ""  # NEW: Optional input folder for reconstruction-only mode
         
         # ====================================================================
         # LOG QUEUE (for displaying messages from workers)
@@ -120,6 +125,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # ====================================================================
         self.acq_worker = None    # Will be created when acquisition starts
         self.recon_worker = None  # Will be created when reconstruction starts
+        self.calibration_worker = None  # NEW: Will be created when calibration runs
+        self.calculated_shift = None  # NEW: Stores shift value from calibration
         
         # Build the UI and load defaults
         self._build_ui()
@@ -224,26 +231,44 @@ class MainWindow(QtWidgets.QMainWindow):
         group = QtWidgets.QGroupBox("Serial Control (STM32)")
         layout = QtWidgets.QGridLayout(group)
         
-        # Widgets - simplified to just port selection and connect button
+        # Port selection widgets
         self.serial_port_combo = QtWidgets.QComboBox()
         self.serial_refresh_btn = QtWidgets.QPushButton("Refresh")
         self.serial_connect_btn = QtWidgets.QPushButton("Connect")
         
-        # Status label to show connection state and auto-commands
+        # Status label to show connection state
         self.serial_status_label = QtWidgets.QLabel("Not connected")
         self.serial_status_label.setStyleSheet("color: gray; font-style: italic;")
+        
+        # Manual command buttons - YOU control when to send OK and STOP
+        self.serial_ok_btn = QtWidgets.QPushButton("Send OK")
+        self.serial_ok_btn.setEnabled(False)  # Disabled until connected
+        self.serial_stop_btn = QtWidgets.QPushButton("Send STOP")
+        self.serial_stop_btn.setEnabled(False)  # Disabled until connected
+        
+        # NEW: Configure Motor button (sends CONFIG command with parameters)
+        self.serial_config_btn = QtWidgets.QPushButton("Configure Motor")
+        self.serial_config_btn.setEnabled(False)  # Disabled until connected
+        self.serial_config_btn.setToolTip("Send CONFIG command to set projections and trigger times")
         
         # Connect signals
         self.serial_refresh_btn.clicked.connect(self._refresh_serial_ports)
         self.serial_connect_btn.clicked.connect(self._toggle_serial_connection)
+        self.serial_ok_btn.clicked.connect(self._send_ok_command)
+        self.serial_stop_btn.clicked.connect(self._send_stop_command)
+        self.serial_config_btn.clicked.connect(self._configure_motor)
         
-        # Layout - simplified grid
+        # Layout
         layout.addWidget(QtWidgets.QLabel("Port"), 0, 0)
         layout.addWidget(self.serial_port_combo, 0, 1)
         layout.addWidget(self.serial_refresh_btn, 0, 2)
         layout.addWidget(self.serial_connect_btn, 0, 3)
         layout.addWidget(QtWidgets.QLabel("Status"), 1, 0)
         layout.addWidget(self.serial_status_label, 1, 1, 1, 3)
+        layout.addWidget(QtWidgets.QLabel("Commands"), 2, 0)
+        layout.addWidget(self.serial_ok_btn, 2, 1)
+        layout.addWidget(self.serial_stop_btn, 2, 2)
+        layout.addWidget(self.serial_config_btn, 3, 1, 1, 2)  # Spans 2 columns
         
         return group
     
@@ -288,9 +313,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recon_args = QtWidgets.QLineEdit()
         self.recon_args.setPlaceholderText("Additional arguments")
         
-        # Input folder label (shows the acquisition save folder)
+        # NEW: Input folder selection (for reconstruction-only mode)
+        # Allows running reconstruction without doing acquisition first
+        select_input_btn = QtWidgets.QPushButton("Select input folder")
+        select_input_btn.clicked.connect(self._select_recon_input)
+        select_input_btn.setToolTip("Select folder with images for reconstruction (optional - uses acquisition folder if not set)")
+        
         self.recon_input_label = QtWidgets.QLabel("Input: (uses acquisition save folder)")
         self.recon_input_label.setStyleSheet("color: gray; font-style: italic;")
+        
+        # NEW: Calibration checkbox - run calibration before reconstruction
+        self.run_calibration_checkbox = QtWidgets.QCheckBox("Run calibration first")
+        self.run_calibration_checkbox.setToolTip("Run calibration script before reconstruction to calculate shift value automatically")
+        self.calibration_status_label = QtWidgets.QLabel("Calibration: Not run")
+        self.calibration_status_label.setStyleSheet("color: gray; font-size: 9pt; font-style: italic;")
         
         # Output folder
         self.recon_output_dir = ""
@@ -304,8 +340,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recon_algorithm_combo.addItems(ITERATIVE_ALGORITHMS)
         self.recon_algorithm_combo.setCurrentIndex(0)
         self.recon_algorithm_combo.currentTextChanged.connect(self._on_recon_method_changed)
+        self.recon_algorithm_combo.currentTextChanged.connect(self._on_algorithm_changed)  # NEW
         self.recon_algorithm_label.setVisible(False)
         self.recon_algorithm_combo.setVisible(False)
+        
+        # NEW: Iterations input (for iterative algorithms only)
+        self.recon_iterations_label = QtWidgets.QLabel("Iterations")
+        self.recon_iterations_spin = QtWidgets.QSpinBox()
+        self.recon_iterations_spin.setRange(1, 500)  # Min 1, max 500 iterations
+        self.recon_iterations_spin.setValue(50)  # Default
+        self.recon_iterations_spin.setToolTip("Number of iterations for the iterative algorithm")
+        self.recon_iterations_label.setVisible(False)
+        self.recon_iterations_spin.setVisible(False)
         
         # Run button
         run_recon_btn = QtWidgets.QPushButton("Run reconstruction")
@@ -316,12 +362,17 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(self.recon_root_label, 0, 1)
         layout.addWidget(self.recon_list, 1, 0, 1, 2)
         layout.addWidget(self.recon_args, 2, 0, 1, 2)
-        layout.addWidget(self.recon_input_label, 3, 0, 1, 2)
-        layout.addWidget(select_output_btn, 4, 0)
-        layout.addWidget(self.recon_output_label, 4, 1)
-        layout.addWidget(self.recon_algorithm_label, 5, 0)
-        layout.addWidget(self.recon_algorithm_combo, 5, 1)
-        layout.addWidget(run_recon_btn, 6, 0, 1, 2)
+        layout.addWidget(select_input_btn, 3, 0)  # NEW: Input folder button
+        layout.addWidget(self.recon_input_label, 3, 1)
+        layout.addWidget(self.run_calibration_checkbox, 4, 0)  # NEW: Calibration checkbox
+        layout.addWidget(self.calibration_status_label, 4, 1)  # NEW: Calibration status
+        layout.addWidget(select_output_btn, 5, 0)
+        layout.addWidget(self.recon_output_label, 5, 1)
+        layout.addWidget(self.recon_algorithm_label, 6, 0)
+        layout.addWidget(self.recon_algorithm_combo, 6, 1)
+        layout.addWidget(self.recon_iterations_label, 7, 0)  # NEW: Iterations
+        layout.addWidget(self.recon_iterations_spin, 7, 1)  # NEW: Iterations
+        layout.addWidget(run_recon_btn, 8, 0, 1, 2)
         layout.setRowMinimumHeight(1, 120)
         layout.setColumnStretch(1, 1)
         
@@ -424,10 +475,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _stop_acquisition(self):
         if self.acq_worker and self.acq_worker.is_running():
             self.acq_worker.request_stop()
-            # Send STOP command via serial to stop the motor
-            if self.serial_handler.is_connected():
-                self.serial_handler.send("STOP")
-                logging.info("Sent STOP command to motor")
+            # Note: If you want to stop the motor, click the "Send STOP" button manually
     
     def _on_acq_started(self):
         self.setCursor(QtCore.Qt.BusyCursor)
@@ -440,12 +488,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Log full message to log view (not truncated)
         logging.info(message)
         
-        # Auto-send OK command to motor when acquisition starts
-        # This tells the motor to start rotating for CT scan
-        if "MAIN ACQUISITION STARTED" in message:
-            if self.serial_handler.is_connected():
-                self.serial_handler.send("OK")  # Send "OK" + newline to STM32
-                logging.info("Sent OK command to start motor")
+        # Note: Manual control - YOU decide when to send OK via the button
+        # No automatic sending of commands
     
     def _on_acq_finished(self, ok, message):
         # Restore normal cursor (no longer busy)
@@ -499,10 +543,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_serial_connection_changed(self, connected):
         # Update button text based on connection state
         self.serial_connect_btn.setText("Disconnect" if connected else "Connect")
+        # Enable/disable command buttons based on connection
+        self.serial_ok_btn.setEnabled(connected)
+        self.serial_stop_btn.setEnabled(connected)
+        self.serial_config_btn.setEnabled(connected)  # NEW: Enable/disable config button
         # Update status label
         if connected:
             port_name = self.serial_port_combo.currentText()
-            self.serial_status_label.setText(f"Connected to {port_name} - Auto-sends OK/STOP")
+            self.serial_status_label.setText(f"Connected to {port_name} - Ready for manual commands")
             self.serial_status_label.setStyleSheet("color: green;")
         else:
             self.serial_status_label.setText("Not connected")
@@ -511,6 +559,74 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_serial_message(self, message):
         # Log all messages received from STM32
         logging.info(f"[SERIAL] {message}")
+    
+    def _send_ok_command(self):
+        """Send OK command to STM32 (manually triggered by user)"""
+        if self.serial_handler.is_connected():
+            self.serial_handler.send("OK")
+            logging.info("[MANUAL] Sent OK command to motor")
+        else:
+            QtWidgets.QMessageBox.warning(self, "Serial", "Serial port not connected")
+    
+    def _send_stop_command(self):
+        """Send STOP command to STM32 (manually triggered by user)"""
+        if self.serial_handler.is_connected():
+            self.serial_handler.send("STOP")
+            logging.info("[MANUAL] Sent STOP command to motor")
+        else:
+            QtWidgets.QMessageBox.warning(self, "Serial", "Serial port not connected")
+    
+    def _send_ok_command(self):
+        """Send OK command to STM32 (manually triggered by user)"""
+        if self.serial_handler.is_connected():
+            self.serial_handler.send("OK")
+            logging.info("[MANUAL] Sent OK command to motor")
+        else:
+            QtWidgets.QMessageBox.warning(self, "Serial", "Serial port not connected")
+    
+    def _send_stop_command(self):
+        """Send STOP command to STM32 (manually triggered by user)"""
+        if self.serial_handler.is_connected():
+            self.serial_handler.send("STOP")
+            logging.info("[MANUAL] Sent STOP command to motor")
+        else:
+            QtWidgets.QMessageBox.warning(self, "Serial", "Serial port not connected")
+    
+    def _configure_motor(self):
+        """
+        Open dialog to configure motor parameters.
+        Sends CONFIG command followed by projections, HIGH time, and LOW time.
+        """
+        # Check if connected first
+        if not self.serial_handler.is_connected():
+            QtWidgets.QMessageBox.warning(self, "Serial", "Serial port not connected")
+            return
+        
+        # Open the configuration dialog
+        dialog = MotorConfigDialog(self)
+        
+        # If user clicks OK in the dialog
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
+            # Get the values from the dialog
+            projections, high_time, low_time = dialog.get_values()
+            
+            # Send CONFIG command
+            logging.info(f"[CONFIG] Sending motor configuration: projections={projections}, HIGH={high_time}ms, LOW={low_time}ms")
+            self.serial_handler.send("CONFIG")
+            
+            # Small delay to let firmware process the command
+            QtCore.QThread.msleep(100)
+            
+            # Send the three parameters (firmware expects them line by line)
+            self.serial_handler.send(str(projections))
+            QtCore.QThread.msleep(50)
+            
+            self.serial_handler.send(str(high_time))
+            QtCore.QThread.msleep(50)
+            
+            self.serial_handler.send(str(low_time))
+            
+            logging.info("[CONFIG] Motor configuration commands sent successfully")
     
     # ========================================================================
     # RECONSTRUCTION HANDLERS
@@ -553,6 +669,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self.recon_output_dir = os.path.normpath(path)
             self.recon_output_label.setText(self.recon_output_dir)
     
+    def _select_recon_input(self):
+        """
+        NEW: Select input folder for reconstruction (reconstruction-only mode).
+        This allows you to run reconstruction without doing acquisition first.
+        """
+        path = QtWidgets.QFileDialog.getExistingDirectory(
+            self, "Select input folder for reconstruction"
+        )
+        if path:
+            # Store the override folder
+            self.recon_input_override = os.path.normpath(path)
+            # Update the label to show selected folder
+            self.recon_input_label.setText(f"Input: {self.recon_input_override}")
+            self.recon_input_label.setStyleSheet("")  # Remove gray italic style
+            logging.info(f"[RECON] Input folder set to: {self.recon_input_override}")
+    
     def _is_iterative_method(self, method_name):
         return method_name.lower().endswith("iteratives") or "iterative" in method_name.lower()
     
@@ -564,6 +696,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not selected_items:
             self.recon_algorithm_label.setVisible(False)
             self.recon_algorithm_combo.setVisible(False)
+            self.recon_iterations_label.setVisible(False)  # NEW
+            self.recon_iterations_spin.setVisible(False)  # NEW
             self.recon_config_group.setVisible(True)
             return
         
@@ -571,11 +705,26 @@ class MainWindow(QtWidgets.QMainWindow):
         is_iterative = self._is_iterative_method(method_name)
         self.recon_algorithm_label.setVisible(is_iterative)
         self.recon_algorithm_combo.setVisible(is_iterative)
+        self.recon_iterations_label.setVisible(is_iterative)  # NEW
+        self.recon_iterations_spin.setVisible(is_iterative)  # NEW
         self.recon_config_group.setVisible(True)
         
         # Update config editor based on selected method
         self._reset_recon_config_editor()
     
+    def _on_algorithm_changed(self, algorithm_name):
+        """
+        NEW: Called when iterative algorithm selection changes.
+        Updates the iterations spinbox with the default for that algorithm.
+        """
+        # Skip if "Select algorithm..." is selected
+        if algorithm_name == "Select algorithm...":
+            return
+        
+        # Get default iterations for this algorithm
+        default_iterations = ITERATIVE_ALGORITHM_ITERATIONS.get(algorithm_name, 50)
+        self.recon_iterations_spin.setValue(default_iterations)
+        logging.info(f"[RECON] Algorithm changed to {algorithm_name}, iterations set to {default_iterations}")
     def _get_current_default_config(self):
         selected_items = self.recon_list.selectedItems()
         if selected_items:
@@ -664,9 +813,23 @@ class MainWindow(QtWidgets.QMainWindow):
             self.recon_form_layout.addRow(label, widget)
     
     def _run_reconstruction(self):
+        """
+        Run reconstruction (optionally with calibration first).
+        
+        NEW: If "Run calibration first" is checked:
+        1. Run calibration script to calculate shift value
+        2. Update calibrated_shift_px parameter automatically
+        3. Then run reconstruction with the new shift value
+        """
+        # Check if reconstruction is already running
         if self.recon_worker and self.recon_worker.is_running():
             return
         
+        # Check if calibration is running
+        if self.calibration_worker and self.calibration_worker.is_running():
+            return
+        
+        # Validate reconstruction method selection
         selected_items = self.recon_list.selectedItems()
         if not selected_items:
             QtWidgets.QMessageBox.warning(self, "Reconstruction", "Select a reconstruction method")
@@ -682,13 +845,133 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.warning(self, "Reconstruction", "Select an iterative algorithm")
             return
         
+        # NEW: Check if we need to run calibration first
+        if self.run_calibration_checkbox.isChecked():
+            # Run calibration before reconstruction
+            self._run_calibration_then_reconstruction()
+            return
+        
+        # Otherwise, proceed directly with reconstruction
+        self._do_reconstruction()
+    
+    def _run_calibration_then_reconstruction(self):
+        """
+        Run calibration first, then automatically run reconstruction.
+        This is called when user checks "Run calibration first" checkbox.
+        """
+        # Get input folder for calibration
+        input_folder = self.recon_input_override or self.save_dir
+        
+        if not input_folder:
+            QtWidgets.QMessageBox.warning(
+                self, "Calibration",
+                "No input folder selected.\n\nSelect input folder first."
+            )
+            return
+        
+        # Check if calibration script exists
+        if not os.path.exists(CALIBRATION_SCRIPT_PATH):
+            QtWidgets.QMessageBox.warning(
+                self, "Calibration",
+                f"Calibration script not found:\n{CALIBRATION_SCRIPT_PATH}"
+            )
+            return
+        
+        logging.info("[CALIBRATION] Starting calibration before reconstruction...")
+        self.calibration_status_label.setText("Calibration: Running...")
+        self.calibration_status_label.setStyleSheet("color: orange; font-size: 9pt;")
+        
+        # Create and start calibration worker
+        self.calibration_worker = CalibrationWorker(CALIBRATION_SCRIPT_PATH, input_folder)
+        self.calibration_worker.finished.connect(self._on_calibration_finished)
+        self.calibration_worker.progress.connect(self._on_calibration_progress)
+        self.calibration_worker.shift_found.connect(self._on_shift_found)
+        self.calibration_worker.start()
+        
+        self.setCursor(QtCore.Qt.BusyCursor)
+        self.statusBar().showMessage("Running calibration...")
+    
+    def _on_shift_found(self, shift_value):
+        """Called when calibration finds the shift value."""
+        self.calculated_shift = shift_value
+        logging.info(f"[CALIBRATION] Shift value found: {shift_value}")
+        
+        # Update the calibrated_shift_px parameter in the config widgets
+        if "calibrated_shift_px" in self._recon_config_widgets:
+            widget = self._recon_config_widgets["calibrated_shift_px"]
+            if isinstance(widget, QtWidgets.QLineEdit):
+                widget.setText(str(shift_value))
+                logging.info(f"[CALIBRATION] Updated calibrated_shift_px parameter to {shift_value}")
+    
+    def _on_calibration_progress(self, message):
+        """Called for calibration progress updates."""
+        self.statusBar().showMessage(message)
+        logging.info(f"[CALIBRATION] {message}")
+    
+    def _on_calibration_finished(self, ok, message):
+        """Called when calibration finishes."""
+        self.setCursor(QtCore.Qt.ArrowCursor)
+        
+        if ok:
+            # Calibration succeeded
+            if self.calculated_shift is not None:
+                self.calibration_status_label.setText(f"Calibration: Done (shift = {self.calculated_shift:.2f})")
+                self.calibration_status_label.setStyleSheet("color: green; font-size: 9pt;")
+                logging.info(f"[CALIBRATION] Calibration completed successfully")
+                
+                # Automatically proceed with reconstruction
+                self.statusBar().showMessage("Calibration done. Starting reconstruction...")
+                QtCore.QTimer.singleShot(500, self._do_reconstruction)  # Small delay
+            else:
+                # Calibration finished but no shift found
+                self.calibration_status_label.setText("Calibration: No shift value found")
+                self.calibration_status_label.setStyleSheet("color: orange; font-size: 9pt;")
+                
+                reply = QtWidgets.QMessageBox.question(
+                    self, "Calibration",
+                    "Calibration completed but shift value was not found in output.\n\nProceed with reconstruction anyway?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
+                )
+                if reply == QtWidgets.QMessageBox.Yes:
+                    QtCore.QTimer.singleShot(500, self._do_reconstruction)
+        else:
+            # Calibration failed
+            self.calibration_status_label.setText("Calibration: Failed")
+            self.calibration_status_label.setStyleSheet("color: red; font-size: 9pt;")
+            QtWidgets.QMessageBox.critical(self, "Calibration", message)
+            self.statusBar().clearMessage()
+    
+    def _do_reconstruction(self):
+        """
+        Actually run the reconstruction.
+        This is called either directly or after calibration completes.
+        """
+        # Get reconstruction method selection
+        selected_items = self.recon_list.selectedItems()
+        if not selected_items:
+            QtWidgets.QMessageBox.warning(self, "Reconstruction", "Select a reconstruction method")
+            return
+        
+        method_name = selected_items[0].text()
+        main_path = self.recon_map.get(method_name)
+        if not main_path:
+            QtWidgets.QMessageBox.warning(self, "Reconstruction", "Invalid reconstruction method")
+            return
+        
+        # Parse arguments
         args = self.recon_args.text().strip().split() if self.recon_args.text().strip() else []
         
-        # Always use save_dir (acquisition folder) as input for reconstruction
-        if self.save_dir:
-            args.extend(["--input", self.save_dir])
+        # Get input folder
+        input_folder = self.recon_input_override or self.save_dir
+        
+        if input_folder:
+            args.extend(["--input", input_folder])
         else:
-            QtWidgets.QMessageBox.warning(self, "Reconstruction", "No acquisition folder selected. Please select a save folder first.")
+            # No input folder selected at all
+            QtWidgets.QMessageBox.warning(
+                self, "Reconstruction", 
+                "No input folder selected.\n\nEither:\n- Do an acquisition first, OR\n- Click 'Select input folder' to choose existing images"
+            )
             return
             
         if self.recon_output_dir:
@@ -698,17 +981,27 @@ class MainWindow(QtWidgets.QMainWindow):
         if recon_config is None:
             return
         
+        # Set environment variables for reconstruction script
         env_vars = {}
-        if self.save_dir:
-            env_vars["ACQ_INPUT_DIR"] = self.save_dir
-            env_vars["RECON_INPUT_DIR"] = self.save_dir
-            env_vars["INPUT_DIR"] = self.save_dir
-            env_vars["INPUT_FOLDER"] = self.save_dir
-            env_vars["SAVE_DIR"] = self.save_dir
+        
+        # Use input_folder (can be override or save_dir) for all input-related env vars
+        if input_folder:
+            env_vars["ACQ_INPUT_DIR"] = input_folder
+            env_vars["RECON_INPUT_DIR"] = input_folder
+            env_vars["INPUT_DIR"] = input_folder
+            env_vars["INPUT_FOLDER"] = input_folder
+            env_vars["SAVE_DIR"] = input_folder
+        
         if self.recon_output_dir:
             env_vars["RECON_OUTPUT_DIR"] = self.recon_output_dir
+        
+        # Send reconstruction config as JSON (check if your scripts read this!)
         env_vars["RECON_CONFIG_JSON"] = json.dumps(recon_config)
         env_vars["RECON_ALGORITHM"] = self.recon_algorithm_combo.currentText()
+        
+        # NEW: Send iterations value for iterative algorithms
+        # Your reconstruction scripts should read this: os.environ.get("RECON_ITERATIONS")
+        env_vars["RECON_ITERATIONS"] = str(self.recon_iterations_spin.value())
         
         self.recon_worker = ReconstructionWorker(main_path, args, env_vars)
         self.recon_worker.finished.connect(self._on_recon_finished)
@@ -753,3 +1046,125 @@ class MainWindow(QtWidgets.QMainWindow):
             # Give time for port to be fully released
             QtCore.QThread.msleep(200)
         event.accept()
+
+
+# ============================================================================
+# MOTOR CONFIGURATION DIALOG
+# ============================================================================
+
+class MotorConfigDialog(QtWidgets.QDialog):
+    """
+    Simple dialog for configuring motor parameters.
+    
+    This dialog allows the user to set:
+    - Number of projections (10-3600)
+    - Trigger HIGH time in milliseconds (10-5000)
+    - Trigger LOW time in milliseconds (10-5000)
+    
+    When OK is clicked, these values are sent to the STM32 via CONFIG command.
+    """
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Motor Configuration")
+        self.setModal(True)  # Block interaction with main window
+        self.setMinimumWidth(400)
+        
+        # Create the layout
+        layout = QtWidgets.QVBoxLayout(self)
+        
+        # Form layout for input fields
+        form = QtWidgets.QFormLayout()
+        
+        # ====================================================================
+        # PROJECTIONS INPUT
+        # ====================================================================
+        self.projections_spin = QtWidgets.QSpinBox()
+        self.projections_spin.setRange(*MOTOR_CONFIG_RANGES["projections"])  # 10 to 3600
+        self.projections_spin.setValue(MOTOR_CONFIG_DEFAULTS["projections"])  # Default: 800
+        self.projections_spin.setSingleStep(10)  # Increment by 10
+        
+        # Label with range info
+        proj_label = QtWidgets.QLabel("Number of projections:")
+        proj_help = QtWidgets.QLabel(f"(Range: {MOTOR_CONFIG_RANGES['projections'][0]} - {MOTOR_CONFIG_RANGES['projections'][1]})")
+        proj_help.setStyleSheet("color: gray; font-size: 9pt;")
+        
+        form.addRow(proj_label, self.projections_spin)
+        form.addRow("", proj_help)
+        
+        # ====================================================================
+        # HIGH TIME INPUT
+        # ====================================================================
+        self.high_time_spin = QtWidgets.QSpinBox()
+        self.high_time_spin.setRange(*MOTOR_CONFIG_RANGES["high_time_ms"])  # 10 to 5000
+        self.high_time_spin.setValue(MOTOR_CONFIG_DEFAULTS["high_time_ms"])  # Default: 400
+        self.high_time_spin.setSingleStep(10)  # Increment by 10
+        self.high_time_spin.setSuffix(" ms")  # Show "ms" after number
+        
+        high_label = QtWidgets.QLabel("Trigger HIGH time:")
+        high_help = QtWidgets.QLabel(f"(Range: {MOTOR_CONFIG_RANGES['high_time_ms'][0]} - {MOTOR_CONFIG_RANGES['high_time_ms'][1]} ms)")
+        high_help.setStyleSheet("color: gray; font-size: 9pt;")
+        
+        form.addRow(high_label, self.high_time_spin)
+        form.addRow("", high_help)
+        
+        # ====================================================================
+        # LOW TIME INPUT
+        # ====================================================================
+        self.low_time_spin = QtWidgets.QSpinBox()
+        self.low_time_spin.setRange(*MOTOR_CONFIG_RANGES["low_time_ms"])  # 10 to 5000
+        self.low_time_spin.setValue(MOTOR_CONFIG_DEFAULTS["low_time_ms"])  # Default: 100
+        self.low_time_spin.setSingleStep(10)  # Increment by 10
+        self.low_time_spin.setSuffix(" ms")  # Show "ms" after number
+        
+        low_label = QtWidgets.QLabel("Trigger LOW time:")
+        low_help = QtWidgets.QLabel(f"(Range: {MOTOR_CONFIG_RANGES['low_time_ms'][0]} - {MOTOR_CONFIG_RANGES['low_time_ms'][1]} ms)")
+        low_help.setStyleSheet("color: gray; font-size: 9pt;")
+        
+        form.addRow(low_label, self.low_time_spin)
+        form.addRow("", low_help)
+        
+        # ====================================================================
+        # CALCULATED STEP ANGLE (READ-ONLY, UPDATES AUTOMATICALLY)
+        # ====================================================================
+        self.step_angle_label = QtWidgets.QLabel()
+        self.step_angle_label.setStyleSheet("font-weight: bold;")
+        self._update_step_angle()  # Calculate initial value
+        
+        # Update step angle whenever projections value changes
+        self.projections_spin.valueChanged.connect(self._update_step_angle)
+        
+        form.addRow("Step angle (calculated):", self.step_angle_label)
+        
+        # Add form to main layout
+        layout.addLayout(form)
+        
+        # ====================================================================
+        # OK AND CANCEL BUTTONS
+        # ====================================================================
+        button_box = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        button_box.accepted.connect(self.accept)  # OK clicked
+        button_box.rejected.connect(self.reject)  # Cancel clicked
+        
+        layout.addWidget(button_box)
+    
+    def _update_step_angle(self):
+        """Calculate and display step angle based on projections."""
+        projections = self.projections_spin.value()
+        step_angle = 360.0 / projections  # 360 degrees divided by number of steps
+        self.step_angle_label.setText(f"{step_angle:.3f}°")
+    
+    def get_values(self):
+        """
+        Return the configured values as a tuple.
+        
+        Returns:
+            tuple: (projections, high_time_ms, low_time_ms)
+        """
+        return (
+            self.projections_spin.value(),
+            self.high_time_spin.value(),
+            self.low_time_spin.value()
+        )
