@@ -93,7 +93,7 @@ class QueueLogHandler(logging.Handler):
             pass  # Never let logging errors crash the process
 
 
-def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_queue, command_queue, acquisition_module_path, defect_map_path):
+def _acquisition_process_target(save_dir, dark_map_path, gain_map_path, preview_only, result_queue, command_queue, acquisition_module_path, defect_map_path):
     """
     Target function for the acquisition process.
     
@@ -142,6 +142,7 @@ def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_qu
         from image_processing import (
             DefectMapContext,
             DarkMapContext,
+            GainMapContext,
             ImageSaver,
             create_image_buffer,
         )
@@ -186,7 +187,8 @@ def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_qu
         
         logging.info("Loading calibration maps...")
         defect_ctx = DefectMapContext(defect_map_path)
-        dark_ctx = DarkMapContext(dark_map_path) if dark_map_path else None
+        dark_ctx   = DarkMapContext(dark_map_path) if dark_map_path else None
+        gain_ctx   = GainMapContext(gain_map_path) if gain_map_path else None
         
         logging.info("Creating image buffer...")
         image_saver = ImageSaver(save_dir, bit_depth=16)
@@ -201,6 +203,7 @@ def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_qu
             image_buffer=image_buffer,
             defect_ctx=defect_ctx,
             dark_ctx=dark_ctx,
+            gain_ctx=gain_ctx,
             image_saver=image_saver,
             exposure_ms=2000
         )
@@ -225,6 +228,7 @@ def _acquisition_process_target(save_dir, dark_map_path, preview_only, result_qu
             image_buffer=image_buffer,
             defect_ctx=defect_ctx,
             dark_ctx=dark_ctx,
+            gain_ctx=gain_ctx,
             image_saver=image_saver,
             stop_callback=should_stop,  # Checked periodically
             pulse_timeout_ms=20000
@@ -309,23 +313,23 @@ class AcquisitionWorker(QtCore.QObject):
         
         self._is_running = False
     
-    def start(self, save_dir, dark_map_path, preview_only=False):
+    def start(self, save_dir, dark_map_path, gain_map_path="", preview_only=False):
         """
         Start the acquisition in a separate process.
 
         """
         if self._is_running:
             return
-        
+
         # Create the communication queues
         # These are process-safe (can be shared between processes)
         self._result_queue = MPQueue()
         self._command_queue = MPQueue()
-        
+
         # Create and start the acquisition process
         self._process = Process(
             target=_acquisition_process_target,
-            args=(save_dir, dark_map_path, preview_only, 
+            args=(save_dir, dark_map_path, gain_map_path, preview_only,
                   self._result_queue, self._command_queue,
                   self._acquisition_module_path, self._defect_map_path)
         )

@@ -21,6 +21,9 @@ DEFAULT_DEFECT_MAP_PATH = r"C:\Users\joaomartimreis\Desktop\Joao_CT\DefectMap.ti
 # Default dark map for image correction (always the same one)
 DEFAULT_DARK_MAP_PATH = r"C:\Users\joaomartimreis\Desktop\Joao_CT\Dark_map\DARK_MAP_5_12.tif"
 
+# Default gain/flat field map path (set to "" to disable gain correction)
+DEFAULT_GAIN_MAP_PATH = r""
+
 # Root folder containing reconstruction algorithm scripts
 DEFAULT_RECON_ROOT = r"C:\Users\joaomartimreis\Desktop\Joao_CT\Reconstruction_Algorithms\MAIN_reconstruction_algorithms"
 

@@ -87,7 +87,7 @@ import multiprocessing
 
 from PySide6 import QtWidgets
 
-from config import LOG_MAX_QUEUE_SIZE, DEFAULT_DARK_MAP_PATH
+from config import LOG_MAX_QUEUE_SIZE, DEFAULT_DARK_MAP_PATH, DEFAULT_GAIN_MAP_PATH
 from logging_utils import ThreadSafeLogQueue, setup_logging
 from main_window import MainWindow
 
@@ -127,7 +127,8 @@ def main():
         acquisition_module_path=ACQUISITION_MODULE_PATH,
         reconstruction_root_path=RECONSTRUCTION_ROOT_PATH,
         defect_map_path=DEFECT_MAP_PATH,
-        default_dark_map_path=DEFAULT_DARK_MAP_PATH
+        default_dark_map_path=DEFAULT_DARK_MAP_PATH,
+        default_gain_map_path=DEFAULT_GAIN_MAP_PATH,
     )
     window.show()
     

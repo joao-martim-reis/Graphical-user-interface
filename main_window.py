@@ -81,7 +81,7 @@ class MainWindow(QtWidgets.QMainWindow):
     3. Batch UI updates to avoid overwhelming the event loop
     """
     
-    def __init__(self, log_queue, acquisition_module_path="", reconstruction_root_path="", defect_map_path="", default_dark_map_path=""):
+    def __init__(self, log_queue, acquisition_module_path="", reconstruction_root_path="", defect_map_path="", default_dark_map_path="", default_gain_map_path=""):
         super().__init__()
         self.setWindowTitle("CT Acquisition and Reconstruction")
         self.resize(1100, 720)
@@ -94,12 +94,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._reconstruction_root_path = reconstruction_root_path  # Path to reconstruction scripts
         self._defect_map_path = defect_map_path  # Path to defect map (always loaded)
         self._default_dark_map_path = default_dark_map_path  # Path to dark map (always loaded)
+        self._default_gain_map_path = default_gain_map_path  # Path to gain/flat field map (optional)
         
         # ====================================================================
         # APPLICATION STATE
         # ====================================================================
         self.save_dir = ""          # Directory for acquired images (user selects this)
         self.dark_map_path = self._default_dark_map_path  # Dark map path (auto-loaded)
+        self.gain_map_path = self._default_gain_map_path  # Gain map path (auto-loaded, optional)
         self.recon_root = ""        # Root folder for reconstruction scripts
         self.recon_map = {}         # Maps method names to script paths
         self.last_preview_path = "" # Path to last preview image
@@ -204,25 +206,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self.save_dir_label = QtWidgets.QLabel("Save folder not selected")
         
         # Info label showing that dark map is auto-loaded
-        self.dark_map_info = QtWidgets.QLabel(f"Dark map: Auto-loaded from config")
+        self.dark_map_info = QtWidgets.QLabel("Dark map: Auto-loaded from config")
         self.dark_map_info.setStyleSheet("color: gray; font-style: italic;")
-        
+
+        # Info label showing gain map state
+        if self.gain_map_path:
+            gain_text = "Gain map: Auto-loaded from config"
+        else:
+            gain_text = "Gain map: Not configured (correction disabled)"
+        self.gain_map_info = QtWidgets.QLabel(gain_text)
+        self.gain_map_info.setStyleSheet("color: gray; font-style: italic;")
+
         # Buttons
         select_save_btn = QtWidgets.QPushButton("Select save folder")
         start_btn = QtWidgets.QPushButton("Start acquisition")
         stop_btn = QtWidgets.QPushButton("Stop")
-        
+
         # Connect signals
         select_save_btn.clicked.connect(self._select_save_folder)
         start_btn.clicked.connect(self._start_acquisition)
         stop_btn.clicked.connect(self._stop_acquisition)
-        
+
         # Layout
-        layout.addWidget(select_save_btn, 0, 0)
+        layout.addWidget(select_save_btn,    0, 0)
         layout.addWidget(self.save_dir_label, 0, 1)
-        layout.addWidget(self.dark_map_info, 1, 0, 1, 2)
-        layout.addWidget(start_btn, 2, 0)
-        layout.addWidget(stop_btn, 2, 1)
+        layout.addWidget(self.dark_map_info,  1, 0, 1, 2)
+        layout.addWidget(self.gain_map_info,  2, 0, 1, 2)
+        layout.addWidget(start_btn,           3, 0)
+        layout.addWidget(stop_btn,            3, 1)
         
         return group
     
@@ -470,7 +481,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.acq_worker.progress.connect(self._on_acq_progress)  # When progress updates arrive
         self.acq_worker.started_work.connect(self._on_acq_started)  # When acquisition starts
         # Start the worker with our parameters
-        self.acq_worker.start(self.save_dir, self.dark_map_path, preview_only)
+        self.acq_worker.start(self.save_dir, self.dark_map_path, self.gain_map_path, preview_only)
     
     def _stop_acquisition(self):
         if self.acq_worker and self.acq_worker.is_running():
