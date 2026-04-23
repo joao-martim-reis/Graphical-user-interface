@@ -75,7 +75,55 @@ FBP_RECON_CONFIG = {
     "calibrated_shift_px": 5.12,
     "shift_sign": -1,
     "default_filter": "hann",
-    "filters": ["ram_lak", "shepp_logan", "hann"]
+    "filters": ["ram_lak", "shepp_logan", "hann"],
+    # FBP's run_reconstruction takes these as separate args — exposing them in
+    # the config makes them editable from the GUI:
+    "line_shift": 100,
+    "lines_filters": [50, 400, 800],
+}
+
+# Human-readable labels used by the reconstruction parameters panel.
+# Keys that appear here get a friendly label in the form; others fall back
+# to the raw dict key. The underlying storage key is unchanged (so the JSON
+# payload to the wrappers stays the same).
+RECON_PARAM_DISPLAY = {
+    "voxel_size": "Voxel size (μm)",
+    "DSD": "Source → Detector (mm)",
+    "DSO": "Source → Object (mm)",
+    "downsample": "Downsample factor",
+    "total_angle": "Total rotation (rad)",
+    "calibrated_shift_px": "Calibrated shift (px)",
+    "shift_sign": "Shift sign (±1)",
+    "filter_type": "Filter type",
+    "rotation_angle": "Rotation angle (rad)",
+    "pixel_size": "Pixel size (mm)",
+    "default_filter": "Default filter",
+    "filters": "Filters to compare",
+    "line_shift": "Line index for shift",
+    "lines_filters": "Lines for filter comparison",
+    "output_folder_NiFT": "Output folder (NIfTI)",
+    "filtered_volumes_folder": "Filtered volumes folder",
+    "detector_tilt": "Detector tilt (rad)",
+}
+
+RECON_PARAM_TOOLTIPS = {
+    "voxel_size": "Target voxel resolution in micrometers. Smaller = higher resolution but more memory/time.",
+    "DSD": "Source-to-Detector Distance in millimeters (from TIGRE geometry).",
+    "DSO": "Source-to-Object Distance in millimeters (from TIGRE geometry).",
+    "downsample": "Integer downsampling factor. 1 = no downsampling. Higher = faster but lower resolution.",
+    "total_angle": "Total rotation angle in radians. 2π ≈ 6.2832 for a full 360° scan.",
+    "calibrated_shift_px": "Detector center offset in pixels. Use the Calibration checkbox to compute automatically.",
+    "shift_sign": "Direction of the detector shift. Try ±1 if the reconstruction looks mirrored.",
+    "filter_type": "FDK filter kernel: ram_lak, shepp_logan, cosine, hamming, hann.",
+    "rotation_angle": "Extra in-plane rotation applied to the volume in radians.",
+    "pixel_size": "Detector pixel pitch in millimeters (FBP).",
+    "default_filter": "Filter used for single-line FBP reconstructions.",
+    "filters": "Comma-separated list of filters to compare side-by-side (FBP).",
+    "line_shift": "Sinogram row used to demonstrate the shift effect (FBP).",
+    "lines_filters": "Comma-separated sinogram rows to visualize across filters (FBP).",
+    "output_folder_NiFT": "Folder where the reconstructed .nii.gz volumes are saved.",
+    "filtered_volumes_folder": "Folder where filtered/derived volumes are saved.",
+    "detector_tilt": "In-plane detector tilt in radians (from calculate_detector_tilt.py).",
 }
 
 

@@ -82,6 +82,7 @@ FILE STRUCTURE
 
 ================================================================================
 """
+import os
 import sys
 import multiprocessing
 
@@ -112,7 +113,16 @@ def main():
     
     # Create the Qt application instance
     app = QtWidgets.QApplication(sys.argv)
-    
+
+    # Apply the light-polish stylesheet (purely cosmetic, no behavior changes)
+    qss_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "style.qss")
+    if os.path.exists(qss_path):
+        try:
+            with open(qss_path, "r", encoding="utf-8") as f:
+                app.setStyleSheet(f.read())
+        except Exception:
+            pass  # Never let styling prevent startup
+
     # Setup thread-safe logging system
     # The log_queue allows background processes to send log messages
     # to the GUI without causing threading issues

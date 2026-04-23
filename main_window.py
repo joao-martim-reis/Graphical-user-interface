@@ -43,7 +43,14 @@ Auto Serial Commands:
 import os
 import json
 import logging
+import time
+from datetime import datetime
 from pathlib import Path
+
+# Data files for presets and reconstruction run history (created on first use).
+_GUI_DIR = Path(__file__).resolve().parent
+PRESETS_PATH = _GUI_DIR / "presets.json"
+HISTORY_PATH = _GUI_DIR / "runs.jsonl"
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -58,10 +65,13 @@ from config import (
     MOTOR_CONFIG_DEFAULTS,
     MOTOR_CONFIG_RANGES,
     CALIBRATION_SCRIPT_PATH,
+    RECON_PARAM_DISPLAY,
+    RECON_PARAM_TOOLTIPS,
 )
 from logging_utils import ThreadSafeLogQueue
 from workers import AcquisitionWorker, ReconstructionWorker, CalibrationWorker
 from serial_handler import SerialHandler
+from iterative_params_dialog import IterativeParametersDialog, load_algorithm_configs
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -106,6 +116,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recon_map = {}         # Maps method names to script paths
         self.last_preview_path = "" # Path to last preview image
         self.recon_input_override = ""  # NEW: Optional input folder for reconstruction-only mode
+        self._iterative_param_overrides = {}  # Per-algorithm overrides from the Advanced dialog
         
         # ====================================================================
         # LOG QUEUE (for displaying messages from workers)
@@ -134,6 +145,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_ui()
         self._load_defaults()
     
+    def _build_menu_bar(self):
+        """Menu bar — currently hosts the reconstruction history viewer."""
+        menu_bar = self.menuBar()
+        view_menu = menu_bar.addMenu("&View")
+        history_action = QtGui.QAction("Reconstruction &history…", self)
+        history_action.triggered.connect(self._show_reconstruction_history)
+        view_menu.addAction(history_action)
+
     def _setup_log_timer(self):
         """
         Setup timer to flush log messages to GUI.
@@ -180,27 +199,35 @@ class MainWindow(QtWidgets.QMainWindow):
     
     def _build_ui(self):
         """Build the main UI."""
+        self._build_menu_bar()
+
         central = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(central)
-        
+        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setSpacing(6)
+
         # Create UI sections
         layout.addWidget(self._create_acquisition_group())
         layout.addWidget(self._create_serial_group())
         layout.addWidget(self._create_reconstruction_group())
         layout.addWidget(self._create_log_group())
-        
-        # Set stretch factors
+
+        # Stretch factors — give most of the vertical room to the reconstruction
+        # panel, less to the log view so the user isn't scrolling through white space.
         layout.setStretch(0, 0)
         layout.setStretch(1, 0)
-        layout.setStretch(2, 0)
+        layout.setStretch(2, 3)
         layout.setStretch(3, 1)
-        
+
         self.setCentralWidget(central)
     
     def _create_acquisition_group(self):
         """Create the acquisition controls group."""
         group = QtWidgets.QGroupBox("Acquisition")
+        group.setObjectName("acquisitionGroup")  # style.qss accent
         layout = QtWidgets.QGridLayout(group)
+        layout.setContentsMargins(10, 14, 10, 8)
+        layout.setVerticalSpacing(4)
         
         # Labels
         self.save_dir_label = QtWidgets.QLabel("Save folder not selected")
@@ -240,7 +267,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _create_serial_group(self):
         """Create the serial control group."""
         group = QtWidgets.QGroupBox("Serial Control (STM32)")
+        group.setObjectName("serialGroup")  # style.qss accent
         layout = QtWidgets.QGridLayout(group)
+        layout.setContentsMargins(10, 14, 10, 8)
+        layout.setVerticalSpacing(4)
         
         # Port selection widgets
         self.serial_port_combo = QtWidgets.QComboBox()
@@ -286,21 +316,35 @@ class MainWindow(QtWidgets.QMainWindow):
     def _create_reconstruction_group(self):
         """Create the reconstruction controls group."""
         group = QtWidgets.QGroupBox("Reconstruction")
-        layout = QtWidgets.QHBoxLayout(group)
-        layout.setContentsMargins(8, 12, 8, 8)
-        layout.setSpacing(12)
-        
+        group.setObjectName("reconstructionGroup")  # style.qss accent
+        layout = QtWidgets.QVBoxLayout(group)
+        layout.setContentsMargins(8, 14, 8, 8)
+        layout.setSpacing(6)
+
         # Left panel - controls
         left_panel = self._create_recon_controls_panel()
-        
+
         # Right panel - config editor
         self.recon_config_group = self._create_recon_config_panel()
-        
-        layout.addWidget(left_panel, 1)
-        layout.addWidget(self.recon_config_group, 1)
-        layout.setStretch(0, 3)
-        layout.setStretch(1, 2)
-        
+
+        # Splitter lets the user resize left/right, fixing the cramped right panel.
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        splitter.addWidget(left_panel)
+        splitter.addWidget(self.recon_config_group)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        splitter.setChildrenCollapsible(False)
+
+        # Indeterminate progress bar — active only while reconstruction is running.
+        self.recon_progress = QtWidgets.QProgressBar()
+        self.recon_progress.setRange(0, 0)  # indeterminate "busy" state
+        self.recon_progress.setVisible(False)
+        self.recon_progress.setTextVisible(False)
+        self.recon_progress.setMaximumHeight(10)
+
+        layout.addWidget(splitter)
+        layout.addWidget(self.recon_progress)
+
         return group
     
     def _create_recon_controls_panel(self):
@@ -315,14 +359,19 @@ class MainWindow(QtWidgets.QMainWindow):
         select_recon_root_btn = QtWidgets.QPushButton("Select reconstruction root")
         select_recon_root_btn.clicked.connect(self._select_recon_root)
         
-        # Method list
+        # Method list — sized to comfortably show all 3 entries (FDK, Iteratives, FBP)
         self.recon_list = QtWidgets.QListWidget()
-        self.recon_list.setMinimumHeight(120)
+        self.recon_list.setMinimumHeight(96)
+        self.recon_list.setMaximumHeight(120)
+        self.recon_list.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.recon_list.itemSelectionChanged.connect(self._on_recon_method_changed)
-        
-        # Arguments
+
+        # Extra CLI args (rarely used — the runners/ wrappers ignore sys.argv).
+        # Kept as a hidden widget so any code path that reads `recon_args.text()`
+        # still works and the field can be restored by flipping this flag.
         self.recon_args = QtWidgets.QLineEdit()
-        self.recon_args.setPlaceholderText("Additional arguments")
+        self.recon_args.setPlaceholderText("Extra CLI args (optional)")
+        self.recon_args.setVisible(False)
         
         # NEW: Input folder selection (for reconstruction-only mode)
         # Allows running reconstruction without doing acquisition first
@@ -358,42 +407,75 @@ class MainWindow(QtWidgets.QMainWindow):
         # NEW: Iterations input (for iterative algorithms only)
         self.recon_iterations_label = QtWidgets.QLabel("Iterations")
         self.recon_iterations_spin = QtWidgets.QSpinBox()
-        self.recon_iterations_spin.setRange(1, 500)  # Min 1, max 500 iterations
+        self.recon_iterations_spin.setRange(1, 5000)  # Allow high iteration counts for algorithms like ASD_POCS
         self.recon_iterations_spin.setValue(50)  # Default
         self.recon_iterations_spin.setToolTip("Number of iterations for the iterative algorithm")
         self.recon_iterations_label.setVisible(False)
         self.recon_iterations_spin.setVisible(False)
-        
-        # Run button
+
+        # Advanced dialog trigger for iterative per-algorithm parameters
+        self.recon_algo_advanced_btn = QtWidgets.QPushButton("Advanced...")
+        self.recon_algo_advanced_btn.setToolTip(
+            "Edit per-algorithm parameters (blocksize, alpha, ...) from iterative_parameters.py"
+        )
+        self.recon_algo_advanced_btn.clicked.connect(self._open_iterative_advanced_dialog)
+        self.recon_algo_advanced_btn.setVisible(False)
+
+        # Run button — primary action styled separately from Advanced button.
         run_recon_btn = QtWidgets.QPushButton("Run reconstruction")
+        run_recon_btn.setObjectName("runReconButton")  # hooked by style.qss
+        run_recon_btn.setMinimumHeight(34)
         run_recon_btn.clicked.connect(self._run_reconstruction)
-        
-        # Layout
+
+        # Divider so Advanced doesn't sit directly on top of Run reconstruction.
+        divider = QtWidgets.QFrame()
+        divider.setFrameShape(QtWidgets.QFrame.HLine)
+        divider.setFrameShadow(QtWidgets.QFrame.Sunken)
+
+        # Layout — Additional arguments is hidden so we don't allocate a row for it.
         layout.addWidget(select_recon_root_btn, 0, 0)
         layout.addWidget(self.recon_root_label, 0, 1)
         layout.addWidget(self.recon_list, 1, 0, 1, 2)
-        layout.addWidget(self.recon_args, 2, 0, 1, 2)
-        layout.addWidget(select_input_btn, 3, 0)  # NEW: Input folder button
-        layout.addWidget(self.recon_input_label, 3, 1)
-        layout.addWidget(self.run_calibration_checkbox, 4, 0)  # NEW: Calibration checkbox
-        layout.addWidget(self.calibration_status_label, 4, 1)  # NEW: Calibration status
-        layout.addWidget(select_output_btn, 5, 0)
-        layout.addWidget(self.recon_output_label, 5, 1)
-        layout.addWidget(self.recon_algorithm_label, 6, 0)
-        layout.addWidget(self.recon_algorithm_combo, 6, 1)
-        layout.addWidget(self.recon_iterations_label, 7, 0)  # NEW: Iterations
-        layout.addWidget(self.recon_iterations_spin, 7, 1)  # NEW: Iterations
-        layout.addWidget(run_recon_btn, 8, 0, 1, 2)
-        layout.setRowMinimumHeight(1, 120)
+        layout.addWidget(select_input_btn, 2, 0)
+        layout.addWidget(self.recon_input_label, 2, 1)
+        layout.addWidget(self.run_calibration_checkbox, 3, 0)
+        layout.addWidget(self.calibration_status_label, 3, 1)
+        layout.addWidget(select_output_btn, 4, 0)
+        layout.addWidget(self.recon_output_label, 4, 1)
+        layout.addWidget(self.recon_algorithm_label, 5, 0)
+        layout.addWidget(self.recon_algorithm_combo, 5, 1)
+        layout.addWidget(self.recon_iterations_label, 6, 0)
+        layout.addWidget(self.recon_iterations_spin, 6, 1)
+        layout.addWidget(self.recon_algo_advanced_btn, 7, 0, 1, 2)
+        layout.addWidget(divider, 8, 0, 1, 2)
+        layout.addWidget(run_recon_btn, 9, 0, 1, 2)
+        layout.setRowMinimumHeight(1, 100)
         layout.setColumnStretch(1, 1)
-        
+
         return panel
     
     def _create_recon_config_panel(self):
         """Create the reconstruction config editor panel."""
         group = QtWidgets.QGroupBox("Reconstruction parameters")
         layout = QtWidgets.QVBoxLayout(group)
-        
+
+        # Preset bar — load/save named parameter sets to presets.json
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_label = QtWidgets.QLabel("Preset")
+        self.preset_combo = QtWidgets.QComboBox()
+        self.preset_combo.setToolTip("Select a saved preset to load")
+        self.preset_load_btn = QtWidgets.QPushButton("Load")
+        self.preset_save_btn = QtWidgets.QPushButton("Save as…")
+        self.preset_delete_btn = QtWidgets.QPushButton("Delete")
+        self.preset_load_btn.clicked.connect(self._preset_load_selected)
+        self.preset_save_btn.clicked.connect(self._preset_save_new)
+        self.preset_delete_btn.clicked.connect(self._preset_delete_selected)
+        preset_row.addWidget(preset_label)
+        preset_row.addWidget(self.preset_combo, 1)
+        preset_row.addWidget(self.preset_load_btn)
+        preset_row.addWidget(self.preset_save_btn)
+        preset_row.addWidget(self.preset_delete_btn)
+
         self.recon_config_scroll = QtWidgets.QScrollArea()
         self.recon_config_scroll.setWidgetResizable(True)
         self.recon_config_container = QtWidgets.QWidget()
@@ -404,34 +486,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self._recon_config_widgets = {}
         self._recon_config_meta = {}
         self._reset_recon_config_editor()
-        
+
         self.reset_config_btn = QtWidgets.QPushButton("Use default config")
         self.reset_config_btn.clicked.connect(self._reset_recon_config_editor)
-        
+
+        layout.addLayout(preset_row)
         layout.addWidget(self.recon_config_scroll)
         layout.addWidget(self.reset_config_btn)
-        
+
+        self._refresh_preset_list()
+
         return group
     
     def _create_log_group(self):
         """Create the log view group."""
         group = QtWidgets.QGroupBox("Logs")
+        group.setObjectName("logsGroup")  # style.qss accent
         layout = QtWidgets.QVBoxLayout(group)
-        
+        layout.setContentsMargins(8, 14, 8, 8)
+
         self.log_view = QtWidgets.QPlainTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMinimumHeight(220)
+        self.log_view.setMinimumHeight(120)
         self.log_view.setLineWrapMode(QtWidgets.QPlainTextEdit.NoWrap)
         self.log_view.setFont(QtGui.QFontDatabase.systemFont(QtGui.QFontDatabase.FixedFont))
         self.log_view.setMaximumBlockCount(LOG_VIEW_MAX_BLOCKS)
         self.log_view.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.log_view.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOn)
         self.log_view.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        
-        group.setMinimumHeight(220)
-        group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.MinimumExpanding)
+
+        group.setMinimumHeight(140)
+        group.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         layout.addWidget(self.log_view)
-        
+
         return group
     
     def _load_defaults(self):
@@ -661,17 +748,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recon_map = {}
         if not self.recon_root:
             return
-        
+
         root = Path(self.recon_root)
+        runners_dir = Path(__file__).resolve().parent / "runners"
+
+        # Each entry: (display name, original-script path used to check presence,
+        # wrapper launcher that runs via runpy). Wrappers live in GUI/runners/
+        # and call the original main() with a GUI-built CONFIG. The originals
+        # are never modified and still work standalone.
         mapping = {
-            "FDK_reduce_memory": root / "FDK_reduce_memory" / "MAIN_TIGRE_FDK_Voxel_size.py",
-            "Iteratives": root / "Iteratives" / "MAIN_TIGRE_iterative.py",
-            "FBP": root / "FBP" / "TIGRE_fbp1.py"
+            "FDK_reduce_memory": (
+                root / "FDK_reduce_memory" / "MAIN_TIGRE_FDK_Voxel_size.py",
+                runners_dir / "run_fdk.py",
+            ),
+            "Iteratives": (
+                root / "Iteratives" / "MAIN_TIGRE_iterative.py",
+                runners_dir / "run_iterative.py",
+            ),
+            "FBP": (
+                root / "FBP" / "TIGRE_fbp1.py",
+                runners_dir / "run_fbp.py",
+            ),
         }
-        
-        for name, path in mapping.items():
-            if path.exists():
-                self.recon_map[name] = str(path)
+
+        for name, (original_path, wrapper_path) in mapping.items():
+            if original_path.exists() and wrapper_path.exists():
+                self.recon_map[name] = str(wrapper_path)
                 self.recon_list.addItem(name)
     
     def _select_recon_output(self):
@@ -709,17 +811,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.recon_algorithm_combo.setVisible(False)
             self.recon_iterations_label.setVisible(False)  # NEW
             self.recon_iterations_spin.setVisible(False)  # NEW
+            self.recon_algo_advanced_btn.setVisible(False)
             self.recon_config_group.setVisible(True)
             return
-        
+
         method_name = selected_items[0].text()
         is_iterative = self._is_iterative_method(method_name)
         self.recon_algorithm_label.setVisible(is_iterative)
         self.recon_algorithm_combo.setVisible(is_iterative)
         self.recon_iterations_label.setVisible(is_iterative)  # NEW
         self.recon_iterations_spin.setVisible(is_iterative)  # NEW
+        # Advanced button appears only when an algorithm (not the placeholder) is picked
+        self._refresh_advanced_button_visibility()
         self.recon_config_group.setVisible(True)
-        
+
         # Update config editor based on selected method
         self._reset_recon_config_editor()
     
@@ -735,7 +840,67 @@ class MainWindow(QtWidgets.QMainWindow):
         # Get default iterations for this algorithm
         default_iterations = ITERATIVE_ALGORITHM_ITERATIONS.get(algorithm_name, 50)
         self.recon_iterations_spin.setValue(default_iterations)
+        self._refresh_advanced_button_visibility()
         logging.info(f"[RECON] Algorithm changed to {algorithm_name}, iterations set to {default_iterations}")
+
+    def _refresh_advanced_button_visibility(self):
+        """Show the Iteratives 'Advanced...' button only when valid to press."""
+        selected_items = self.recon_list.selectedItems()
+        is_iterative = bool(selected_items) and self._is_iterative_method(selected_items[0].text())
+        algo_chosen = (
+            self.recon_algorithm_combo.currentIndex() > 0
+            and self.recon_algorithm_combo.currentText() != "Select algorithm..."
+        )
+        self.recon_algo_advanced_btn.setVisible(is_iterative and algo_chosen)
+
+    def _open_iterative_advanced_dialog(self):
+        """Open the per-algorithm parameter dialog for the current iterative algorithm."""
+        algo_name = self.recon_algorithm_combo.currentText()
+        if not algo_name or algo_name == "Select algorithm...":
+            QtWidgets.QMessageBox.information(
+                self, "Advanced parameters", "Select an iterative algorithm first."
+            )
+            return
+
+        configs = load_algorithm_configs(self.recon_root)
+        if not configs:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Advanced parameters",
+                "Could not load iterative_parameters.py from the reconstruction root.",
+            )
+            return
+
+        entry = configs.get(algo_name)
+        if entry is None:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Advanced parameters",
+                f"Algorithm '{algo_name}' not found in iterative_parameters.py.\n\n"
+                f"Available: {', '.join(sorted(configs.keys()))}",
+            )
+            return
+
+        existing = dict(self._iterative_param_overrides.get(algo_name, {}))
+        # Seed the dialog's iterations field with whatever the spinbox currently shows
+        existing.setdefault("_iterations", int(self.recon_iterations_spin.value()))
+
+        dlg = IterativeParametersDialog(algo_name, entry, current_overrides=existing, parent=self)
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+
+        overrides = dlg.result_overrides()
+        # Iterations flow through the spinbox + RECON_ITERATIONS env var.
+        if "_iterations" in overrides:
+            self.recon_iterations_spin.setValue(int(overrides.pop("_iterations")))
+
+        if overrides:
+            self._iterative_param_overrides[algo_name] = overrides
+            logging.info(f"[RECON] Advanced overrides for {algo_name}: {overrides}")
+        else:
+            self._iterative_param_overrides.pop(algo_name, None)
+            logging.info(f"[RECON] Advanced overrides for {algo_name} cleared (all defaults).")
+
     def _get_current_default_config(self):
         selected_items = self.recon_list.selectedItems()
         if selected_items:
@@ -798,7 +963,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._recon_config_meta = {}
 
         for key, value in config.items():
-            label = QtWidgets.QLabel(key)
+            display = RECON_PARAM_DISPLAY.get(key, key)
+            label = QtWidgets.QLabel(display)
+            tip = RECON_PARAM_TOOLTIPS.get(key, "")
+            if tip:
+                label.setToolTip(tip)
 
             if isinstance(value, bool):
                 widget = QtWidgets.QCheckBox()
@@ -812,6 +981,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     validator = QtGui.QDoubleValidator(widget)
                     validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
                 widget.setValidator(validator)
+                widget.textChanged.connect(self._on_validated_text_changed)
                 self._recon_config_meta[key] = {"type": type(value), "is_list": False}
             elif isinstance(value, list):
                 widget = QtWidgets.QLineEdit(", ".join(str(item) for item in value))
@@ -820,8 +990,28 @@ class MainWindow(QtWidgets.QMainWindow):
                 widget = QtWidgets.QLineEdit(str(value))
                 self._recon_config_meta[key] = {"type": str, "is_list": False}
 
+            if tip:
+                widget.setToolTip(tip)
+
             self._recon_config_widgets[key] = widget
             self.recon_form_layout.addRow(label, widget)
+
+    def _on_validated_text_changed(self, text):
+        """Toggle the `invalid` dynamic property so the QSS red-border rule triggers."""
+        sender = self.sender()
+        if not isinstance(sender, QtWidgets.QLineEdit):
+            return
+        validator = sender.validator()
+        invalid = False
+        if validator is not None:
+            state, _, _ = validator.validate(text, 0)
+            invalid = state != QtGui.QValidator.Acceptable
+        sender.setProperty("invalid", "true" if invalid else "false")
+        # Re-polish so the stylesheet picks up the property change
+        style = sender.style()
+        if style is not None:
+            style.unpolish(sender)
+            style.polish(sender)
     
     def _run_reconstruction(self):
         """
@@ -1005,22 +1195,37 @@ class MainWindow(QtWidgets.QMainWindow):
         
         if self.recon_output_dir:
             env_vars["RECON_OUTPUT_DIR"] = self.recon_output_dir
-        
-        # Send reconstruction config as JSON (check if your scripts read this!)
+
+        # Pass the algorithm root so wrappers (GUI/runners/run_*.py) can resolve
+        # the sibling folders (FDK_reduce_memory, Iteratives, FBP) from whichever
+        # reconstruction root the user picked.
+        if self.recon_root:
+            env_vars["RECON_ROOT"] = self.recon_root
+            env_vars["RECON_ALGORITHM_ROOT"] = self.recon_root
+
+        # Reconstruction config — consumed by GUI/runners/run_*.py wrappers which
+        # merge these overrides onto the scripts' built-in defaults before
+        # calling main(). The original scripts remain untouched.
         env_vars["RECON_CONFIG_JSON"] = json.dumps(recon_config)
         env_vars["RECON_ALGORITHM"] = self.recon_algorithm_combo.currentText()
-        
-        # NEW: Send iterations value for iterative algorithms
-        # Your reconstruction scripts should read this: os.environ.get("RECON_ITERATIONS")
         env_vars["RECON_ITERATIONS"] = str(self.recon_iterations_spin.value())
+
+        # Per-algorithm overrides from the Iteratives "Advanced..." dialog
+        algo_overrides = getattr(self, "_iterative_param_overrides", {}) or {}
+        algo_key = self.recon_algorithm_combo.currentText()
+        if self._is_iterative_method(method_name) and algo_key in algo_overrides:
+            env_vars["RECON_ALGO_PARAMS_JSON"] = json.dumps(algo_overrides[algo_key])
         
+        self._capture_run_start(method_name, recon_config, input_folder)
+
         self.recon_worker = ReconstructionWorker(main_path, args, env_vars)
         self.recon_worker.finished.connect(self._on_recon_finished)
         self.recon_worker.progress.connect(self._on_recon_progress)
         self.recon_worker.input_requested.connect(self._on_recon_input_requested)
         self.recon_worker.start()
-        
+
         self.setCursor(QtCore.Qt.BusyCursor)
+        self.recon_progress.setVisible(True)
         self.statusBar().showMessage("Reconstruction in progress...")
     
     def _on_recon_progress(self, message):
@@ -1029,7 +1234,9 @@ class MainWindow(QtWidgets.QMainWindow):
     
     def _on_recon_finished(self, ok, message):
         self.setCursor(QtCore.Qt.ArrowCursor)
+        self.recon_progress.setVisible(False)
         self.statusBar().clearMessage()
+        self._log_reconstruction_run(ok, message)
         if ok:
             QtWidgets.QMessageBox.information(self, "Reconstruction", message)
         else:
@@ -1043,6 +1250,209 @@ class MainWindow(QtWidgets.QMainWindow):
             text = ""
         if self.recon_worker:
             self.recon_worker.send_input_response(text)
+
+    # ========================================================================
+    # PRESETS (save/load parameter sets) — stored in GUI/presets.json
+    # ========================================================================
+
+    def _load_presets_file(self):
+        if not PRESETS_PATH.exists():
+            return {}
+        try:
+            with open(PRESETS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception as e:
+            logging.warning(f"[PRESETS] Could not read {PRESETS_PATH}: {e}")
+            return {}
+
+    def _write_presets_file(self, data):
+        try:
+            with open(PRESETS_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, sort_keys=True)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Presets", f"Could not save presets: {e}")
+
+    def _refresh_preset_list(self):
+        presets = self._load_presets_file()
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        if not presets:
+            self.preset_combo.addItem("(no presets saved)")
+            self.preset_combo.setEnabled(False)
+            self.preset_load_btn.setEnabled(False)
+            self.preset_delete_btn.setEnabled(False)
+        else:
+            self.preset_combo.setEnabled(True)
+            self.preset_load_btn.setEnabled(True)
+            self.preset_delete_btn.setEnabled(True)
+            for name in sorted(presets.keys()):
+                self.preset_combo.addItem(name)
+        self.preset_combo.blockSignals(False)
+
+    def _preset_save_new(self):
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Save preset", "Preset name:", QtWidgets.QLineEdit.Normal, ""
+        )
+        if not ok or not name.strip():
+            return
+        name = name.strip()
+
+        cfg = self._get_recon_config()
+        if cfg is None:
+            return
+
+        method_items = self.recon_list.selectedItems()
+        method_name = method_items[0].text() if method_items else ""
+
+        algorithm = self.recon_algorithm_combo.currentText()
+        if algorithm == "Select algorithm...":
+            algorithm = ""
+
+        presets = self._load_presets_file()
+        if name in presets:
+            reply = QtWidgets.QMessageBox.question(
+                self, "Overwrite preset?",
+                f"A preset called '{name}' already exists. Overwrite it?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+
+        presets[name] = {
+            "method": method_name,
+            "algorithm": algorithm,
+            "iterations": int(self.recon_iterations_spin.value()) if algorithm else None,
+            "config": cfg,
+            "algo_overrides": dict(self._iterative_param_overrides.get(algorithm, {})) if algorithm else {},
+            "saved_at": datetime.now().isoformat(timespec="seconds"),
+        }
+        self._write_presets_file(presets)
+        self._refresh_preset_list()
+        index = self.preset_combo.findText(name)
+        if index >= 0:
+            self.preset_combo.setCurrentIndex(index)
+        logging.info(f"[PRESETS] Saved preset '{name}'.")
+
+    def _preset_load_selected(self):
+        name = self.preset_combo.currentText()
+        if not name or name == "(no presets saved)":
+            return
+        presets = self._load_presets_file()
+        preset = presets.get(name)
+        if not preset:
+            return
+
+        # Select the reconstruction method if it's known to the UI
+        method_name = preset.get("method", "")
+        if method_name:
+            for i in range(self.recon_list.count()):
+                if self.recon_list.item(i).text() == method_name:
+                    self.recon_list.setCurrentRow(i)
+                    break
+
+        # Populate the config form
+        cfg = preset.get("config") or {}
+        if cfg:
+            self._build_recon_config_form(cfg)
+
+        algorithm = preset.get("algorithm") or ""
+        if algorithm:
+            idx = self.recon_algorithm_combo.findText(algorithm)
+            if idx >= 0:
+                self.recon_algorithm_combo.setCurrentIndex(idx)
+            iterations = preset.get("iterations")
+            if isinstance(iterations, int) and iterations > 0:
+                self.recon_iterations_spin.setValue(iterations)
+            algo_overrides = preset.get("algo_overrides") or {}
+            if algo_overrides:
+                self._iterative_param_overrides[algorithm] = dict(algo_overrides)
+            else:
+                self._iterative_param_overrides.pop(algorithm, None)
+
+        logging.info(f"[PRESETS] Loaded preset '{name}'.")
+
+    def _preset_delete_selected(self):
+        name = self.preset_combo.currentText()
+        if not name or name == "(no presets saved)":
+            return
+        reply = QtWidgets.QMessageBox.question(
+            self, "Delete preset?",
+            f"Delete preset '{name}'?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        presets = self._load_presets_file()
+        if name in presets:
+            presets.pop(name)
+            self._write_presets_file(presets)
+            self._refresh_preset_list()
+            logging.info(f"[PRESETS] Deleted preset '{name}'.")
+
+    # ========================================================================
+    # RECONSTRUCTION HISTORY — appended to GUI/runs.jsonl
+    # ========================================================================
+
+    def _capture_run_start(self, method_name, recon_config, input_folder):
+        self._run_record = {
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+            "method": method_name,
+            "algorithm": (
+                self.recon_algorithm_combo.currentText()
+                if self._is_iterative_method(method_name)
+                else ""
+            ),
+            "iterations": (
+                int(self.recon_iterations_spin.value())
+                if self._is_iterative_method(method_name)
+                else None
+            ),
+            "input_folder": input_folder,
+            "output_folder": self.recon_output_dir,
+            "config": dict(recon_config or {}),
+        }
+        self._run_started_at = time.monotonic()
+
+    def _log_reconstruction_run(self, ok, message):
+        record = getattr(self, "_run_record", None)
+        if not record:
+            return
+        started = getattr(self, "_run_started_at", None)
+        duration = round(time.monotonic() - started, 2) if started else None
+        record.update({
+            "duration_sec": duration,
+            "status": "success" if ok else "error",
+            "message": message,
+        })
+        try:
+            with open(HISTORY_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(record) + "\n")
+        except Exception as e:
+            logging.warning(f"[HISTORY] Could not append to {HISTORY_PATH}: {e}")
+        # Reset for the next run
+        self._run_record = None
+        self._run_started_at = None
+
+    def _show_reconstruction_history(self):
+        rows = []
+        if HISTORY_PATH.exists():
+            try:
+                with open(HISTORY_PATH, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rows.append(json.loads(line))
+                        except Exception:
+                            continue
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "History", f"Could not read history: {e}")
+                return
+
+        dialog = ReconstructionHistoryDialog(rows, parent=self)
+        dialog.exec()
     
     def closeEvent(self, event):
         """
@@ -1170,7 +1580,7 @@ class MotorConfigDialog(QtWidgets.QDialog):
     def get_values(self):
         """
         Return the configured values as a tuple.
-        
+
         Returns:
             tuple: (projections, high_time_ms, low_time_ms)
         """
@@ -1179,3 +1589,56 @@ class MotorConfigDialog(QtWidgets.QDialog):
             self.high_time_spin.value(),
             self.low_time_spin.value()
         )
+
+
+# ============================================================================
+# RECONSTRUCTION HISTORY DIALOG
+# ============================================================================
+
+class ReconstructionHistoryDialog(QtWidgets.QDialog):
+    """
+    Read-only viewer over runs.jsonl. Shows one row per reconstruction run
+    with timestamp, method, algorithm, duration, and status.
+    """
+
+    COLUMNS = ("timestamp", "method", "algorithm", "iterations", "duration_sec", "status", "input_folder")
+
+    def __init__(self, rows, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Reconstruction history")
+        self.setModal(False)
+        self.resize(900, 420)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        if not rows:
+            empty = QtWidgets.QLabel("No reconstruction runs have been recorded yet.")
+            empty.setAlignment(QtCore.Qt.AlignCenter)
+            empty.setStyleSheet("color: gray; font-style: italic; padding: 20px;")
+            layout.addWidget(empty)
+        else:
+            table = QtWidgets.QTableWidget(len(rows), len(self.COLUMNS))
+            table.setHorizontalHeaderLabels([c.replace("_", " ") for c in self.COLUMNS])
+            table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+            table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+            table.verticalHeader().setVisible(False)
+            # Most recent first
+            for row_idx, record in enumerate(reversed(rows)):
+                for col_idx, key in enumerate(self.COLUMNS):
+                    value = record.get(key, "")
+                    if value is None:
+                        value = ""
+                    item = QtWidgets.QTableWidgetItem(str(value))
+                    if key == "status" and value == "error":
+                        item.setForeground(QtGui.QBrush(QtGui.QColor("#c0392b")))
+                    elif key == "status" and value == "success":
+                        item.setForeground(QtGui.QBrush(QtGui.QColor("#2e7d32")))
+                    table.setItem(row_idx, col_idx, item)
+            table.resizeColumnsToContents()
+            table.horizontalHeader().setStretchLastSection(True)
+            layout.addWidget(table)
+
+        btn_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Close)
+        btn_box.rejected.connect(self.reject)
+        btn_box.accepted.connect(self.accept)
+        layout.addWidget(btn_box)

@@ -1,0 +1,205 @@
+/* CT Acquisition and Reconstruction GUI — light-polish stylesheet.
+   Applied once at startup in main.py. Purely cosmetic — no widget behavior
+   is affected by this file.
+   Palette: monochrome grayscale. */
+
+QMainWindow, QDialog {
+    background-color: #eef0f2;
+}
+
+/* ---------- Group boxes: tighter padding, gray section accents ---------- */
+QGroupBox {
+    border: 1px solid #c5c9d1;
+    border-radius: 5px;
+    margin-top: 11px;
+    padding: 6px 8px 6px 8px;
+    background-color: #fcfcfd;
+    font-weight: 600;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    padding: 0 6px;
+    color: #2c3e50;
+    left: 8px;
+    background-color: transparent;
+}
+
+/* Section tints — subtle steps in gray from lightest (top) to darker (bottom) */
+QGroupBox#acquisitionGroup {
+    background-color: #fafbfc;
+    border-color: #cfd3d9;
+}
+QGroupBox#acquisitionGroup::title { color: #2c3e50; }
+
+QGroupBox#serialGroup {
+    background-color: #f3f4f6;
+    border-color: #c8ccd2;
+}
+QGroupBox#serialGroup::title { color: #2c3e50; }
+
+QGroupBox#reconstructionGroup {
+    background-color: #edeef1;
+    border-color: #bfc3ca;
+}
+QGroupBox#reconstructionGroup::title { color: #2c3e50; }
+
+QGroupBox#logsGroup {
+    background-color: #e5e7ea;
+    border-color: #b5b9c0;
+}
+QGroupBox#logsGroup::title { color: #3a3f47; }
+
+/* Nested group inside Reconstruction (right-side parameter panel) */
+QGroupBox QGroupBox {
+    background-color: rgba(255, 255, 255, 180);
+    margin-top: 10px;
+}
+
+QLabel {
+    color: #2c3e50;
+}
+
+/* ---------- Inputs ---------- */
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {
+    border: 1px solid #c5c9d1;
+    border-radius: 3px;
+    padding: 2px 6px;
+    background-color: white;
+    selection-background-color: #6c7380;
+    selection-color: white;
+    min-height: 20px;
+}
+QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+    border: 1px solid #6c7380;
+}
+QLineEdit:disabled, QComboBox:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled {
+    background-color: #eceef1;
+    color: #7f8998;
+}
+
+/* Red border for fields whose text fails validation. Toggled from Python. */
+QLineEdit[invalid="true"] {
+    border: 1px solid #7a7a7a;
+    background-color: #f1ecec;
+}
+
+/* ---------- Buttons ---------- */
+QPushButton {
+    border: 1px solid #b8bdc6;
+    border-radius: 4px;
+    background-color: #ffffff;
+    padding: 4px 12px;
+    min-height: 20px;
+    color: #2c3e50;
+}
+QPushButton:hover {
+    background-color: #e8eaee;
+    border-color: #8a909b;
+}
+QPushButton:pressed {
+    background-color: #d5d8dd;
+}
+QPushButton:disabled {
+    color: #9aa1ac;
+    background-color: #eceef1;
+    border-color: #d0d4db;
+}
+
+/* Primary action button — Run reconstruction. Blue to stand out. */
+QPushButton#runReconButton {
+    background-color: #4a90d9;
+    border: 1px solid #2e6fb0;
+    color: white;
+    font-weight: 600;
+}
+QPushButton#runReconButton:hover {
+    background-color: #3d7dc2;
+}
+QPushButton#runReconButton:pressed {
+    background-color: #2e6fb0;
+}
+QPushButton#runReconButton:disabled {
+    background-color: #aab9cc;
+    border-color: #8da0bb;
+    color: #f0f2f5;
+}
+
+/* ---------- List / text ---------- */
+QListWidget {
+    border: 1px solid #c5c9d1;
+    border-radius: 3px;
+    background-color: white;
+    alternate-background-color: #f7f8fa;
+    padding: 2px;
+}
+QListWidget::item {
+    padding: 4px 6px;
+}
+QListWidget::item:hover {
+    background-color: #e8eaee;
+}
+QListWidget::item:selected {
+    background-color: #6c7380;
+    color: white;
+}
+
+QPlainTextEdit {
+    border: 1px solid #c5c9d1;
+    border-radius: 3px;
+    background-color: #fbfbfc;
+    color: #1f2d3d;
+}
+
+QScrollArea {
+    border: 1px solid #c5c9d1;
+    border-radius: 3px;
+    background-color: #ffffff;
+}
+
+QProgressBar {
+    border: 1px solid #c5c9d1;
+    border-radius: 3px;
+    text-align: center;
+    background-color: #ffffff;
+    min-height: 8px;
+    max-height: 10px;
+}
+QProgressBar::chunk {
+    background-color: #6c7380;
+    border-radius: 2px;
+}
+
+QCheckBox {
+    color: #2c3e50;
+    spacing: 6px;
+}
+
+QStatusBar {
+    background-color: #dcdfe3;
+    color: #2c3e50;
+}
+
+QMenuBar {
+    background-color: #dcdfe3;
+    color: #2c3e50;
+}
+QMenuBar::item:selected {
+    background-color: #6c7380;
+    color: white;
+}
+
+QToolTip {
+    color: #2c3e50;
+    background-color: #f7f7f4;
+    border: 1px solid #c5c9d1;
+    padding: 3px 6px;
+}
+
+QSplitter::handle:horizontal {
+    background-color: #c5c9d1;
+    width: 4px;
+}
+QSplitter::handle:horizontal:hover {
+    background-color: #6c7380;
+}

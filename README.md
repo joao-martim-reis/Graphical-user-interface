@@ -1,774 +1,318 @@
 # CT Acquisition and Reconstruction GUI
 
-A simplified graphical interface for controlling CT image acquisition and running reconstruction algorithms.
+A desktop app for driving a cone-beam micro-CT pipeline end-to-end: image
+acquisition from the camera, motor control over a serial link to the STM32,
+and volume reconstruction using FDK, FBP, or iterative algorithms through
+TIGRE. Built with PySide6.
+
+> If you have the same scanner (camera + STM32 + GPU with TIGRE), the goal is
+> simple: install the pieces listed below, run `python main.py`, click Start.
 
 ---
 
-## 📋 Quick Start
+## What you get
 
-1. **Install Requirements:**
-   - Python 3.8+
-   - PySide6: `pip install PySide6`
-   - Camera SDK modules (in acquisition folder)
-
-2. **Configure Paths** in `main.py`:
-   - `ACQUISITION_MODULE_PATH` - Path to camera SDK
-   - `RECONSTRUCTION_ROOT_PATH` - Path to reconstruction scripts
-   - `DEFECT_MAP_PATH` - Path to defect map file
-
-3. **Configure Default Dark Map** in `config.py`:
-   - `DEFAULT_DARK_MAP_PATH` - Path to your dark map file (auto-loaded)
-
-4. **Run the GUI:**
-   ```bash
-   python main.py
-   ```
-
----
-
-## 🎯 What This GUI Does
-
-### 1. **Acquisition** (Camera Control)
-- Captures CT images from your camera
-- Applies defect correction and dark map correction automatically
-- Saves images to a folder you choose
-- Automatically communicates with motor controller during scan
-
-### 2. **Serial Control** (Motor Controller)
-- Connects to STM32 microcontroller
-- **Automatically sends:**
-  - `OK` when acquisition starts → tells motor to start rotating
-  - `STOP` when you click Stop → tells motor to stop immediately
-- Shows status and received messages
-
-### 3. **Reconstruction** (Image Processing)
-- Runs reconstruction algorithms on acquired images
-- Supports: FDK, FBP, and Iterative methods
-- Editable parameters (you can change them before running)
-- Uses the acquisition folder as input automatically
-
-### 4. **Logging** (Status Display)
-- Shows real-time messages from all operations
-- Never freezes the GUI (messages are buffered)
-- Scrolls automatically to show latest updates
+- Acquire projections directly from the detector, with automatic dark-map
+  and (optional) gain-map correction.
+- Drive the STM32 motor controller from the same window - connect, configure
+  projections / high / low trigger times, send `OK` / `STOP`.
+- Run reconstructions without editing Python: FDK (reduce-memory), any of 11
+  iterative algorithms (SIRT, CGLS, LSQR, LSMR, OSSART, SART, MLEM, OSSART_TV,
+  SART_TV, ASD_POCS, AWASD_POCS), or single-line FBP with filter comparison.
+- Live parameter editor on the right side - voxel size, DSD / DSO, filter,
+  shift, rotation. Values actually apply at runtime via lightweight wrappers
+  in `runners/`.
+- `Advanced...` dialog for iterative algorithms that reads
+  `iterative_parameters.py` at runtime and lets you tweak per-algorithm
+  parameters (`blocksize`, `alpha`, iterations).
+- Optional calibration step that computes the detector shift before
+  reconstruction and auto-fills the parameter.
+- Save / load named **parameter presets** (per phantom, per experiment).
+- Automatic **reconstruction history** (`runs.jsonl`) with a table viewer
+  under `View → Reconstruction history`.
+- Thread-safe logging panel that never freezes, even during long acquisitions.
 
 ---
 
-## 📦 File Structure & Classes
+## Prerequisites
+
+### Hardware
+
+- Your detector + camera, connected and powered.
+- STM32 motor controller flashed with the matching firmware, reachable on a
+  serial port (default 115200 baud).
+- An NVIDIA GPU with up-to-date CUDA drivers (TIGRE runs on CUDA).
+
+### Software
+
+| Component | What to install | Notes |
+|---|---|---|
+| Python | 3.8 or newer (64-bit, Windows) | Tested on 3.10 / 3.11 |
+| Python packages | `pip install -r requirements.txt` | Covers the GUI + reconstruction Python deps |
+| **TIGRE** | Follow the official instructions at https://github.com/CERN/TIGRE | Needs a matching CUDA toolkit; not a normal pip install |
+| **Reconstruction algorithms** | Clone the companion repo (see below) | Contains the FDK / iterative / FBP scripts the GUI launches |
+| **Camera SDK** | Install from the detector vendor (Spectral Instruments / SLDevice) | Ships a Python wrapper the acquisition module imports |
+
+### Companion repositories / folders
+
+The GUI assumes two sibling components exist on disk, referenced by absolute
+paths:
+
+```
+Reconstruction_Algorithms/
+└── MAIN_reconstruction_algorithms/
+    ├── FDK_reduce_memory/
+    ├── Iteratives/
+    ├── FBP/
+    └── Calibration/
+
+<acquisition-sdk-root>/
+└── <trigger-mode-folder>/       # e.g. Hot_duration_trig_mode
+    ├── camera_config.py
+    ├── acquisition.py
+    └── image_processing.py
+```
+
+The reconstruction algorithms live in a separate repo you will clone
+(URL goes here once you push them). The acquisition SDK comes from your
+camera vendor and is not redistributable; install it from their package.
+
+---
+
+## Install
+
+```bash
+# 1. Clone this GUI repo
+git clone https://github.com/joao-martim-reis/GUI.git
+cd GUI
+
+# 2. (Optional but recommended) create a virtual environment
+python -m venv .venv
+.venv\Scripts\activate
+
+# 3. Install Python dependencies
+pip install -r requirements.txt
+
+# 4. Install TIGRE
+#    Follow https://github.com/CERN/TIGRE - this compiles against your CUDA.
+#    Confirm with: python -c "import tigre; print(tigre.__version__)"
+
+# 5. Clone the reconstruction algorithms repo next to the GUI
+git clone <URL_OF_RECONSTRUCTION_ALGORITHMS_REPO>
+
+# 6. Install the camera SDK from your vendor
+#    (produces the folder with camera_config.py, acquisition.py, etc.)
+```
+
+---
+
+## Configure paths (once)
+
+Open `main.py` and edit the three paths at the top:
+
+```python
+ACQUISITION_MODULE_PATH  = r"C:\path\to\your\camera_sdk\Hot_duration_trig_mode"
+RECONSTRUCTION_ROOT_PATH = r"C:\path\to\Reconstruction_Algorithms\MAIN_reconstruction_algorithms"
+DEFECT_MAP_PATH          = r"C:\path\to\DefectMap.tif"
+```
+
+And in `config.py`:
+
+```python
+DEFAULT_DARK_MAP_PATH = r"C:\path\to\Dark_map\DARK_MAP_xxx.tif"
+DEFAULT_GAIN_MAP_PATH = r""   # leave empty to disable gain correction
+CALIBRATION_SCRIPT_PATH = r"C:\path\to\Reconstruction_Algorithms\MAIN_reconstruction_algorithms\Calibration\calibration_main.py"
+```
+
+These are the only paths you need to touch. Everything else (output folders,
+filtered-volumes folders) can be chosen from the GUI at runtime.
+
+---
+
+## Run
+
+```bash
+python main.py
+```
+
+You can also create a desktop shortcut pointing at
+`pythonw.exe main.py` (no terminal window) or package with PyInstaller later
+for a single `.exe`.
+
+---
+
+## Typical workflow
+
+1. **Connect the STM32** - pick the port, click `Connect`. The status label
+   turns green.
+2. **Configure the motor** - click `Configure Motor`, set number of
+   projections + HIGH / LOW trigger times, click OK. The firmware receives
+   the new values.
+3. **Pick a save folder** under *Acquisition* - where TIFFs will be written.
+4. **Start acquisition**. Projections stream into the save folder. Click
+   `Send OK` to start motor rotation; click `Stop` + `Send STOP` to end early.
+5. **Select a reconstruction method** (`FDK_reduce_memory`, `Iteratives`,
+   or `FBP`). The parameter panel on the right repopulates with the
+   method's defaults.
+6. *(Optional for iterative)* - pick an algorithm from the `Iterative
+   algorithm` dropdown, set the iterations, or click `Advanced...` to tweak
+   `blocksize` / `alpha`.
+7. *(Optional)* tick `Run calibration first` - the detector shift is
+   computed and `calibrated_shift_px` is auto-filled.
+8. **Run reconstruction**. The blue button kicks off the wrapper in
+   `runners/`, which applies your right-panel values to the underlying
+   algorithm script. Logs stream into the log panel.
+9. **Save a preset** (`Save as...`) to reuse this exact configuration
+   later, and check `View → Reconstruction history` to see every run's
+   timestamp, algorithm, duration, and status.
+
+---
+
+## How parameters actually reach the reconstruction scripts
+
+The GUI does **not** edit the algorithm scripts. It runs one of three tiny
+launchers in `runners/` (`run_fdk.py`, `run_iterative.py`, `run_fbp.py`).
+Each launcher reads environment variables set by the GUI
+(`RECON_CONFIG_JSON`, `RECON_ALGORITHM`, `RECON_ITERATIONS`,
+`RECON_ALGO_PARAMS_JSON`, `RECON_INPUT_DIR`, `RECON_OUTPUT_DIR`), imports the
+corresponding algorithm module (which skips its hardcoded `__main__` block),
+and calls its `main()` directly with a freshly built CONFIG dict. Running the
+original scripts directly from the command line still works with their
+hardcoded defaults - nothing in `Reconstruction_Algorithms/` was modified.
+
+---
+
+## Files in this repo
 
 ```
 GUI/
-├── main.py                 # Entry point - starts the application
-├── config.py               # Configuration settings (paths, parameters)
-├── main_window.py          # MainWindow class - the GUI you see
-├── workers.py              # Worker classes - background processes
-├── serial_handler.py       # SerialHandler class - motor communication
-└── logging_utils.py        # Logging classes - message handling
+├── main.py                      # Entry point
+├── main_window.py               # MainWindow class, menu, preset bar, history
+├── config.py                    # Default paths, parameter labels and tooltips
+├── workers.py                   # Background processes for acquisition / recon
+├── serial_handler.py            # STM32 serial communication
+├── logging_utils.py             # Thread-safe log queue + GUI log handler
+├── iterative_params_dialog.py   # Dialog that reads iterative_parameters.py
+├── style.qss                    # Grayscale UI stylesheet
+├── runners/                     # Launchers that bridge GUI config -> algo main()
+│   ├── run_fdk.py
+│   ├── run_iterative.py
+│   ├── run_fbp.py
+│   └── _wrapper_common.py
+├── presets.json                 # Auto-created on first preset save
+├── runs.jsonl                   # Auto-created on first reconstruction
+└── requirements.txt
 ```
-
-### **File-by-File Explanation:**
-
----
-
-### 1. `main.py` - Application Entry Point
-**Purpose:** Starts everything up
-
-**What it does:**
-1. Creates the Qt application (the window system)
-2. Sets up the logging system
-3. Creates the main window
-4. Runs the event loop (keeps GUI responsive)
-
-**Key code:**
-```python
-app = QtWidgets.QApplication(sys.argv)  # Create application
-window = MainWindow(...)                 # Create main window
-window.show()                            # Show the window
-sys.exit(app.exec())                     # Run until user closes
-```
-
-**No classes here** - just the startup sequence.
-
----
-
-### 2. `main_window.py` - MainWindow Class
-**Purpose:** The actual GUI you interact with
-
-**The MainWindow Class:**
-```python
-class MainWindow(QtWidgets.QMainWindow):
-```
-
-**What this means:**
-- `class MainWindow` - We're creating a new class called MainWindow
-- `(QtWidgets.QMainWindow)` - It inherits from QMainWindow (gets all window features)
-- Inheritance means: "MainWindow is a QMainWindow, plus extra stuff we add"
-
-**Structure:**
-```python
-class MainWindow:
-    def __init__(self, ...):         # Constructor - runs when window is created
-        self.save_dir = ""            # Instance variable - stores save folder path
-        self.acq_worker = None        # Instance variable - stores acquisition worker
-        self._build_ui()              # Method call - builds the interface
-    
-    def _build_ui(self):              # Method - creates buttons, labels, etc.
-        # Creates the UI elements
-    
-    def _start_acquisition(self):     # Method - handles button click
-        # Start the camera acquisition
-    
-    def _on_acq_progress(self, msg):  # Method - handles progress updates
-        # Update status bar and log
-```
-
-**Key concepts:**
-- `self` - Refers to "this specific window object"
-- `self.save_dir` - This window's save directory
-- Methods starting with `_` are "private" (internal use only)
-
-**Instance variables (stored data):**
-- `self.save_dir` - Where to save images
-- `self.dark_map_path` - Path to dark map (auto-loaded)
-- `self.acq_worker` - The acquisition worker object
-- `self.recon_worker` - The reconstruction worker object
-- `self.serial_handler` - The serial communication object
-
-**Methods (actions):**
-- `_select_save_folder()` - Opens folder picker
-- `_start_acquisition()` - Starts camera capture
-- `_stop_acquisition()` - Stops camera capture
-- `_run_reconstruction()` - Starts reconstruction
-- `_on_acq_progress(message)` - Handles progress updates
-
----
-
-### 3. `workers.py` - Worker Classes
-**Purpose:** Handle heavy work without freezing GUI
-
-#### **AcquisitionWorker Class:**
-```python
-class AcquisitionWorker(QtCore.QObject):
-    # Qt signals - used to send messages back to GUI
-    preview_ready = QtCore.Signal(str)
-    finished = QtCore.Signal(bool, str)
-    progress = QtCore.Signal(str)
-    
-    def __init__(self, ...):
-        self._process = None          # The separate process doing camera work
-        self._result_queue = None     # Queue for receiving messages
-        
-    def start(self, save_dir, dark_map_path, preview_only):
-        # Creates a NEW PROCESS (not a thread!)
-        self._process = Process(target=_acquisition_process_target, ...)
-        self._process.start()         # Start it running
-        self._poll_timer.start()      # Start checking for messages
-    
-    def _poll_results(self):
-        # Called every 100ms to check for messages from process
-        msg_type, msg_data = self._result_queue.get_nowait()
-        if msg_type == "progress":
-            self.progress.emit(msg_data)  # Send to GUI
-```
-
-**Why separate process?**
-- Camera operations can take seconds
-- If they ran in the GUI process, GUI would freeze
-- Separate process = GUI stays responsive
-
-**How communication works:**
-```
-┌──────────────────┐                  ┌──────────────────┐
-│   GUI Process    │                  │ Acquisition      │
-│   (MainWindow)   │                  │ Process          │
-│                  │                  │                  │
-│  QTimer polls    │◄─── Queue ──────│  Sends messages  │
-│  every 100ms     │                  │  ("progress")    │
-│                  │                  │  ("finished")    │
-│  Emits signals   │                  │  ("error")       │
-│  to MainWindow   │                  │                  │
-└──────────────────┘                  └──────────────────┘
-```
-
-#### **ReconstructionWorker Class:**
-Similar structure to AcquisitionWorker:
-- Runs reconstruction in separate process
-- Uses queue for communication
-- Emits signals to GUI
-- Can handle input requests (for interactive reconstruction)
-
----
-
-### 4. `serial_handler.py` - SerialHandler Class
-**Purpose:** Communicate with STM32 motor controller
-
-```python
-class SerialHandler(QtCore.QObject):
-    # Signals for notifying MainWindow
-    message_received = QtCore.Signal(str)
-    connection_changed = QtCore.Signal(bool)
-    
-    def __init__(self, parent=None):
-        self._port = QtSerialPort.QSerialPort(self)  # Qt serial port object
-        self._rx_buffer = ""                         # Buffer for incoming data
-        
-    def connect(self, port_name, baud_rate):
-        # Open the serial port
-        self._port.setPortName(port_name)
-        self._port.open(...)
-        # IMPORTANT: Disable DTR/RTS to prevent STM32 reset!
-        self._port.setDataTerminalReady(False)
-        self._port.setRequestToSend(False)
-    
-    def send(self, text):
-        # Send command with newline
-        self._port.write(f"{text}\n".encode())
-    
-    def _on_ready_read(self):
-        # Called automatically when data arrives
-        # Buffers incomplete lines until we get a full message
-```
-
-**Key feature:** Event-driven (non-blocking)
-- Qt calls `_on_ready_read()` when data arrives
-- No need to constantly check for data
-- Never freezes the GUI
-
----
-
-### 5. `logging_utils.py` - Logging Classes
-**Purpose:** Handle log messages efficiently
-
-#### **ThreadSafeLogQueue Class:**
-```python
-class ThreadSafeLogQueue:
-    def __init__(self, max_size=1000):
-        self._queue = Queue(maxsize=max_size)  # Python's thread-safe queue
-        
-    def put(self, msg):
-        # Add message to queue (drops oldest if full)
-        
-    def get_batch(self, max_items=10):
-        # Get multiple messages at once (efficient!)
-        # Returns up to max_items messages
-```
-
-**Why needed?**
-- Acquisition process sends LOTS of messages
-- Updating GUI for each one would be slow
-- Queue buffers them, GUI reads in batches
-
-#### **GUILogHandler Class:**
-```python
-class GUILogHandler(logging.Handler):
-    def __init__(self, log_queue):
-        self._log_queue = log_queue
-        
-    def emit(self, record):
-        # Called by logging module for each log message
-        msg = self.format(record)
-        self._log_queue.put(msg)  # Add to queue
-```
-
-**How it works:**
-```python
-# Anywhere in code:
-logging.info("Camera opened successfully")
-
-# Behind the scenes:
-# 1. logging module calls GUILogHandler.emit()
-# 2. Handler puts message in queue
-# 3. MainWindow's timer reads from queue every 250ms
-# 4. Messages are displayed in log view
-```
-
----
-
-## 🔄 How Everything Connects (Signal/Slot Pattern)
-
-### **What are Signals and Slots?**
-
-**Signal:** An announcement that something happened
-**Slot:** A function that responds to the announcement
-
-**Example:**
-```python
-# In AcquisitionWorker:
-self.progress = QtCore.Signal(str)  # Define signal
-
-# Later, when something happens:
-self.progress.emit("Captured image 50/200")  # Send the signal
-
-# In MainWindow:
-self.acq_worker.progress.connect(self._on_acq_progress)  # Connect signal to slot
-
-# When signal is emitted, this method is called:
-def _on_acq_progress(self, message):
-    logging.info(message)  # Display the message
-```
-
-**Why use signals/slots?**
-- Thread-safe communication between classes
-- Loose coupling (classes don't need to know about each other)
-- Easy to connect/disconnect handlers
-
----
-
-## 🔍 Step-by-Step: What Happens When You Click "Start Acquisition"
-
-1. **You click "Start acquisition" button**
-   ```python
-   # MainWindow._start_acquisition() is called
-   ```
-
-2. **MainWindow creates an AcquisitionWorker**
-   ```python
-   self.acq_worker = AcquisitionWorker(...)
-   self.acq_worker.progress.connect(self._on_acq_progress)  # Connect signals
-   self.acq_worker.start(self.save_dir, self.dark_map_path, False)
-   ```
-
-3. **AcquisitionWorker creates a separate Process**
-   ```python
-   self._process = Process(target=_acquisition_process_target, ...)
-   self._process.start()  # NEW PROCESS starts running
-   ```
-
-4. **Acquisition process does camera work**
-   ```python
-   # In separate process:
-   camera_device = open_camera()  # Can take seconds - doesn't freeze GUI!
-   capture_preview_image(...)
-   run_acquisition_loop(...)      # Captures all images
-   ```
-
-5. **Process sends messages via queue**
-   ```python
-   result_queue.put(("progress", "Captured image 10/200"))
-   ```
-
-6. **MainWindow's timer polls queue every 100ms**
-   ```python
-   # AcquisitionWorker._poll_results() runs automatically
-   msg_type, msg_data = self._result_queue.get_nowait()
-   self.progress.emit(msg_data)  # Emit Qt signal
-   ```
-
-7. **MainWindow receives signal and updates GUI**
-   ```python
-   # MainWindow._on_acq_progress() is called
-   def _on_acq_progress(self, message):
-       self.statusBar().showMessage(message)  # Update status bar
-       logging.info(message)                   # Add to log view
-       
-       if "MAIN ACQUISITION STARTED" in message:
-           self.serial_handler.send("OK")      # Tell motor to start!
-   ```
-
-8. **When finished, process sends "finished" message**
-   ```python
-   result_queue.put(("finished", "Acquisition completed"))
-   ```
-
-9. **MainWindow shows completion dialog**
-   ```python
-   # MainWindow._on_acq_finished() is called
-   QtWidgets.QMessageBox.information(self, "Acquisition", "Acquisition completed")
-   ```
-
----
-
-## 📖 Key Programming Concepts Used
-
-### **1. Classes and Objects**
-- **Class:** Blueprint/template (defines structure)
-- **Object:** Instance created from class (actual thing)
-- **Example:** `MainWindow` is a class, `window = MainWindow()` creates an object
-
-### **2. Inheritance**
-- **Concept:** One class extends another
-- **Example:** `class MainWindow(QtWidgets.QMainWindow):`
-- **Means:** MainWindow has all QMainWindow features, plus our additions
-
-### **3. Methods**
-- **Concept:** Functions that belong to a class
-- **Syntax:** `def method_name(self, parameters):`
-- **`self`:** Refers to the current object
-
-### **4. Instance Variables**
-- **Concept:** Data that belongs to a specific object
-- **Syntax:** `self.variable_name = value`
-- **Example:** `self.save_dir` stores this window's save directory
-
-### **5. Signals and Slots**
-- **Concept:** Qt's way of connecting events to handlers
-- **Signal:** Announcement of an event
-- **Slot:** Function that responds to signal
-- **Example:** `button.clicked.connect(self.do_something)`
-
-### **6. Multiprocessing**
-- **Concept:** Running code in completely separate processes
-- **Why:** Prevents GUI freezing during heavy operations
-- **Communication:** Via queues (process-safe)
-
-### **7. Event-Driven Programming**
-- **Concept:** Code runs in response to events (clicks, timers, etc.)
-- **Qt Event Loop:** Constantly checks for events and calls handlers
-- **Example:** Button click → Qt calls your method
-
----
-
-## 🎓 Understanding the Code Flow
-
-### **Starting the Application:**
-```
-main.py
-  ├─> Creates QApplication
-  ├─> Creates log queue
-  ├─> Creates MainWindow object
-  │     └─> MainWindow.__init__() runs
-  │           ├─> Stores configuration paths
-  │           ├─> Creates SerialHandler object
-  │           ├─> Calls _build_ui()
-  │           │     └─> Creates all buttons, labels, etc.
-  │           └─> Calls _load_defaults()
-  └─> Calls app.exec() - starts event loop
-```
-
-### **During Acquisition:**
-```
-User clicks button
-  └─> MainWindow._start_acquisition() called
-        └─> Creates AcquisitionWorker object
-              ├─> Connects signals to MainWindow methods
-              └─> Calls worker.start()
-                    └─> Creates Process
-                          ├─> Process runs camera code
-                          └─> Sends messages via queue
-                                ↓
-        Timer polls queue every 100ms
-                                ↓
-        Worker emits signals
-                                ↓
-        MainWindow methods called
-                                ↓
-        GUI updates (status, logs)
-```
-
----
-
-## 💡 Tips for Understanding the Code
-
-1. **Start with `main.py`** - See how everything starts
-2. **Look at `MainWindow.__init__`** - See how window is set up
-3. **Find button connections** - See what happens when you click
-4. **Follow one action completely** - Pick "Start acquisition" and trace through
-5. **Read inline comments** - Explain what each line does
-6. **Don't worry about Qt details** - Focus on the logic flow
-
----
-
-## 🔧 Customization Guide
-
-### **Change Default Paths:**
-Edit `main.py`:
-```python
-ACQUISITION_MODULE_PATH = r"C:\your\path\here"
-RECONSTRUCTION_ROOT_PATH = r"C:\your\path\here"
-DEFECT_MAP_PATH = r"C:\your\defect_map.tif"
-```
-
-Edit `config.py`:
-```python
-DEFAULT_DARK_MAP_PATH = r"C:\your\dark_map.tif"
-```
-
-### **Change Reconstruction Parameters:**
-Edit `config.py`:
-```python
-DEFAULT_RECON_CONFIG = {
-    "voxel_size": 26,     # Change this
-    "DSD": 457,           # And this
-    # ... etc
-}
-```
-
-### **Change GUI Performance:**
-Edit `config.py`:
-```python
-LOG_FLUSH_INTERVAL_MS = 250  # How often to update log (milliseconds)
-LOG_MAX_ITEMS_PER_FLUSH = 10  # Max messages per update
-LOG_VIEW_MAX_BLOCKS = 2000    # Max lines in log view
-```
-
----
-
-## ❓ FAQ
-
-**Q: Why does the GUI not freeze during acquisition?**  
-A: Acquisition runs in a separate process with its own Python interpreter. The GUI process stays responsive.
-
-**Q: What's the difference between a process and a thread?**  
-A: Process = completely separate (own memory, own Python interpreter). Thread = shares memory (can cause issues with Python's GIL).
-
-**Q: Why use classes instead of just functions?**  
-A: Classes group related data and functions together, making code more organized and easier to maintain.
-
-**Q: What is `self`?**  
-A: `self` refers to the current object. `self.save_dir` means "this object's save_dir variable".
-
-**Q: How do signals/slots work?**  
-A: Signal = announcement ("something happened"). Slot = handler ("do this when announcement happens"). Qt manages the connection.
-
-**Q: Can I add more buttons or features?**  
-A: Yes! Add UI elements in `_build_ui()`, create handler methods, and connect them with `.clicked.connect()`.
-
----
-
-## 📞 Troubleshooting
-
-**GUI freezes:**
-- Check that acquisition/reconstruction use multiprocessing (not threads)
-- Check that heavy operations don't run in MainWindow methods
-
-**Serial port issues:**
-- Make sure baud rate matches STM32 (115200)
-- Check that DTR/RTS are disabled (prevents reset)
-- Close other programs using the port
-
-**Camera errors:**
-- Check paths in `main.py` are correct
-- Make sure camera SDK modules are accessible
-- Check defect map and dark map paths
-
-**Reconstruction fails:**
-- Check reconstruction scripts exist
-- Check input folder has images
-- Check output folder is writable
-
----
-
-Made with ❤️ for CT scanning
-
-## Module Descriptions
-
-### `main.py`
-**Entry point** for the application. Initializes the Qt application, logging system, and main window.
-
-### `config.py`
-**All configuration constants** in one place:
-- File paths (acquisition modules, defect maps, reconstruction root)
-- Reconstruction configs (DEFAULT_RECON_CONFIG, FBP_RECON_CONFIG)
-- GUI settings (log buffer sizes, flush intervals)
-- Iterative algorithm list
-
-**To change settings**, edit this file:
-```python
-# Example: Enable log mirroring (may slow down GUI)
-LOG_MIRROR_ENABLED = True
-
-# Example: Change FBP config
-FBP_RECON_CONFIG = {
-    "pixel_size": 0.05,
-    "calibrated_shift_px": 5.12,
-    ...
-}
-```
-
-### `logging_utils.py`
-**Thread-safe logging** that won't freeze the GUI:
-- `ThreadSafeLogQueue` - Queue for log messages with overflow protection
-- `MinimalStreamTee` - Optional stdout/stderr capture (disabled by default)
-- `GUILogHandler` - Sends logging module messages to GUI
-
-### `workers.py`
-**Background workers** for heavy tasks:
-- `AcquisitionWorker` - Runs camera acquisition in a **separate process** (multiprocessing)
-- `ReconstructionWorker` - Runs reconstruction scripts in a thread
-
-**Why multiprocessing for acquisition?**
-- Camera SDK may block at driver level
-- Python threads share GIL (Global Interpreter Lock)
-- Separate process = complete isolation from GUI
-
-### `serial_handler.py`
-**STM32 serial communication**:
-- Port discovery and connection
-- Send/receive with line buffering
-- Signal-based message handling
-- Auto commands: "OK" on start, "STOP" on stop
-
-### `main_window.py`
-**Main GUI window**:
-- Acquisition controls (save folder, dark map, start/stop)
-- Serial port controls (connect, send commands)
-- Reconstruction controls (method selection, config editor)
-- Log viewer
-
----
-
-## Automatic Serial Commands
-
-The GUI automatically sends commands to the STM32:
-
-| Event | Command | Purpose |
-|-------|---------|---------|
-| "MAIN ACQUISITION STARTED" appears | `OK` | Tell motor to start rotating |
-| User clicks "Stop" button | `STOP` | Tell motor to stop |
 
 ---
 
 ## Troubleshooting
 
-### GUI Freezes During Acquisition
+**GUI won't start** - usually a missing path. Check `main.py` and `config.py`
+have the four paths filled in. The acquisition module path in particular
+must point at the folder that contains `camera_config.py`.
 
-This should no longer happen! But if it does:
+**`ModuleNotFoundError: No module named 'tigre'`** - TIGRE isn't installed in
+your Python environment. Follow the CERN TIGRE install guide. A working
+install answers `python -c "import tigre"` silently.
 
-2. **Enable verbose logging** in `config.py`:
-   ```python
-   LOG_MIRROR_ENABLED = True
-   ```
+**Serial port says "Not connected"** - ensure no other program (Arduino IDE,
+PuTTY, another Python process) holds the port. Baud must match the STM32
+firmware (default 115200).
 
-3. **Add debug prints** in `workers.py` inside `_acquisition_process_target()`:
-   ```python
-   print("DEBUG: Opening camera...")  # Appears in terminal
-   ```
+**Reconstruction starts but fails instantly** - the wrapper echoes every
+parameter it received at the top of the log. Verify the paths and values
+are what you expect. The three most common causes are: wrong input folder,
+TIGRE not on the Python path of the subprocess, or an invalid voxel size /
+downsample combo.
 
-### Log View Not Updating
+**Parameters on the right panel "don't do anything"** - they do. Look for
+the `[WRAPPER]` banner in the logs right after you click Run reconstruction
+- the values you set are printed there and are what the algorithm uses.
 
-The log view only shows `logging.info()` messages by default. To see all prints:
-```python
-# In config.py
-LOG_MIRROR_ENABLED = True
-```
-⚠️ Warning: This may slow down the GUI if there's heavy output.
-
-### Camera Not Found
-
-Check that the acquisition module path is correct in `config.py`:
-```python
-ACQUISITION_MODULE_PATH = r"C:\Users\joaomartimreis\Desktop\Joao_CT\S2I_External_Trigger_detector_image_acquisition\Hot_duration_trig_mode"
-```
-
-### Serial Port Issues
-
-1. Click "Refresh" to rescan ports
-2. Check baud rate matches STM32 configuration (default: 115200)
-3. Ensure no other application is using the port
+**Napari window never appears** - Napari needs a Qt backend. If you
+installed PySide6 already you're covered. If you see an error about
+`qtpy`, run `pip install qtpy`.
 
 ---
 
-## Configuration Reference
+## Features added recently
 
-### Reconstruction Configs
-
-**FDK / Iterative Methods** use `DEFAULT_RECON_CONFIG`:
-```python
-{
-    "voxel_size": 26,
-    "DSD": 457,
-    "DSO": 211,
-    "downsample": 1,
-    "total_angle": 2 * math.pi,
-    "calibrated_shift_px": 15.6,
-    "shift_sign": 1,
-    "filter_type": "ram_lak",
-    "rotation_angle": 0.0,
-    "output_folder_NiFT": "...",
-    "filtered_volumes_folder": "..."
-}
-```
-
-**FBP** uses `FBP_RECON_CONFIG`:
-```python
-{
-    "pixel_size": 0.05,
-    "calibrated_shift_px": 5.12,
-    "shift_sign": -1,
-    "default_filter": "hann",
-    "filters": ["ram_lak", "shepp_logan", "hann"]
-}
-```
-
-The GUI automatically switches between configs when you select a method.
-
-### GUI Performance Settings
-
-In `config.py`:
-```python
-LOG_MIRROR_ENABLED = False      # Mirror ALL stdout to GUI (slow if True)
-LOG_MAX_QUEUE_SIZE = 1000       # Max pending log messages
-LOG_FLUSH_INTERVAL_MS = 250     # How often to update log view
-LOG_MAX_ITEMS_PER_FLUSH = 10    # Max lines added per update
-LOG_VIEW_MAX_BLOCKS = 2000      # Max lines in log view
-```
+- `runners/` wrappers so right-panel parameters actually apply to the
+  algorithm call (previously the scripts used their own hardcoded CONFIG).
+- Iteratives `Advanced...` dialog that reads `iterative_parameters.py`
+  dynamically.
+- Preset save / load, reconstruction history viewer.
+- Light-polish grayscale stylesheet, resizable splitter, indeterminate
+  progress bar while a run is in flight, per-field tooltips and red-border
+  validation.
 
 ---
 
-## Architecture Notes
+<details>
+<summary><b>Developer notes (architecture deep-dive)</b></summary>
 
-### Why Separate Process for Acquisition?
+### Process model
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      MAIN PROCESS                           │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│  │   Qt GUI    │    │   Logging   │    │   Serial    │     │
-│  │   Thread    │    │   Handler   │    │   Handler   │     │
-│  └─────────────┘    └─────────────┘    └─────────────┘     │
-│         │                                                   │
-│         │ Poll results (100ms timer)                        │
-│         ▼                                                   │
-│  ┌─────────────┐                                           │
-│  │   Result    │◄─────── multiprocessing.Queue ◄───────────┤
-│  │   Queue     │                                           │
-│  └─────────────┘                                           │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              │ Completely isolated
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   ACQUISITION PROCESS                        │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐     │
-│  │   Camera    │    │   Image     │    │   File      │     │
-│  │   SDK       │    │  Processing │    │   Saving    │     │
-│  └─────────────┘    └─────────────┘    └─────────────┘     │
-└─────────────────────────────────────────────────────────────┘
+MAIN PROCESS (GUI)
+  - Qt event loop, log view, serial handler
+  - QTimer polls a multiprocessing.Queue every 100 ms
+
+                         |  messages ("progress", "log", "finished")
+                         v
+
+ACQUISITION PROCESS (separate interpreter)
+  - Camera SDK (can block on hardware without freezing GUI)
+  - Image correction + file saving
+  - Log handler pushes to result queue
 ```
 
-This architecture ensures the GUI **never freezes** even if:
-- Camera SDK blocks waiting for hardware
-- Heavy image processing is running
-- File I/O is slow
+Reconstruction uses the same pattern: a separate process driven by
+`multiprocessing`, with stdout / stderr / `input()` redirected through
+queues so interactive matplotlib / napari windows work inside the
+subprocess without blocking the GUI.
 
----
+### Signals / slots
 
-## Adding New Features
+All communication between workers and the main window is Qt signals, so it
+is thread- and process-safe. `main_window._on_acq_progress`,
+`_on_recon_progress`, `_on_recon_finished`, etc. are the slots.
 
-### Adding a New Reconstruction Method
+### Paths of interest
 
-1. Add the method mapping in `main_window.py` → `_scan_reconstruction_methods()`:
-   ```python
-   mapping = {
-       "FDK_reduce_memory": root / "FDK_reduce_memory" / "MAIN_TIGRE_FDK_Voxel_size.py",
-       "FBP": root / "FBP" / "TIGRE_fbp1.py",
-       "NEW_METHOD": root / "new_folder" / "new_script.py",  # Add here
-   }
-   ```
+- Entry point: `main.py` → creates `QApplication`, loads `style.qss`,
+  instantiates `MainWindow`, runs `app.exec()`.
+- Reconstruction launch: `main_window._do_reconstruction()` sets env vars
+  and starts a `ReconstructionWorker`. The worker runs
+  `_reconstruction_process_target` (in `workers.py`) which `runpy.run_path`s
+  one of `runners/run_*.py`.
+- Iterative parameter dialog: `iterative_params_dialog.load_algorithm_configs`
+  reads `iterative_parameters.py` via `importlib.util.spec_from_file_location`.
 
-2. If it needs a special config, add it in `config.py` and update `_get_current_default_config()`.
+### Extending
 
-### Adding New GUI Controls
+- **Add a reconstruction method**: create a new wrapper in `runners/` that
+  imports your algorithm script's `main` function, then add an entry in
+  `main_window._scan_reconstruction_methods` pointing to it. Nothing else
+  has to change.
+- **Expose a new parameter**: add it to `DEFAULT_RECON_CONFIG` (or
+  `FBP_RECON_CONFIG`) in `config.py`, add display label and tooltip in
+  `RECON_PARAM_DISPLAY` / `RECON_PARAM_TOOLTIPS`. Wrappers pick it up
+  automatically from `RECON_CONFIG_JSON`.
+- **New iterative algorithm**: add it to `ALGORITHM_CONFIGS` in
+  `Reconstruction_Algorithms/.../Iteratives/iterative_parameters.py` and
+  to `ITERATIVE_ALGORITHMS` / `ITERATIVE_ALGORITHM_ITERATIONS` in
+  `config.py`. The `Advanced...` dialog picks up the new params
+  automatically.
 
-1. Create the widget in the appropriate `_create_*_group()` method in `main_window.py`
-2. Connect signals to handler methods
-3. Implement the handler method
+### GUI performance tuning (`config.py`)
 
----
-
-## Contact
-
-For issues with the camera modules, check the acquisition module documentation in:
 ```
-C:\Users\joaomartimreis\Desktop\Joao_CT\S2I_External_Trigger_detector_image_acquisition\
+LOG_MAX_QUEUE_SIZE      = 1000   # max pending log messages
+LOG_FLUSH_INTERVAL_MS   = 250    # how often to update the log view
+LOG_MAX_ITEMS_PER_FLUSH = 10     # max lines added per update
+LOG_VIEW_MAX_BLOCKS     = 2000   # max lines kept in the log view
 ```
+
+</details>

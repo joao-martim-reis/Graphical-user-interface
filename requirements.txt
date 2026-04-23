@@ -1,0 +1,27 @@
+# ---------------------------------------------------------------------------
+# CT Acquisition and Reconstruction GUI — Python dependencies
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# NOTE: two things are NOT installable via pip and must be set up manually
+# (see README for instructions):
+#   1. TIGRE               — GPU-accelerated reconstruction toolkit (needs CUDA).
+#                            Follow https://github.com/CERN/TIGRE
+#   2. Camera SDK          — vendor-specific (Spectral Instruments / SLDevice).
+#                            Install from the manufacturer and point the GUI's
+#                            ACQUISITION_MODULE_PATH at its Python bindings.
+# ---------------------------------------------------------------------------
+
+# ---- GUI ----
+PySide6>=6.5                # Qt 6 Python bindings; includes QtSerialPort
+
+# ---- Numeric / IO ----
+numpy>=1.23
+scipy>=1.10                 # used by calibration segmentation
+tifffile>=2023.0            # TIFF projection loader
+nibabel>=5.0                # NIfTI volume export
+
+# ---- Visualisation used by reconstruction scripts ----
+matplotlib>=3.7             # interactive ROI / shift / filter plots
+napari>=0.4.18              # 3D volume viewer opened after FDK / iterative runs

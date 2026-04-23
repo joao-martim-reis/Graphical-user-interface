@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/joaomartimreis/Desktop/Joao_CT/Reconstruction_Algorithms/MAIN_reconstruction_algorithms/FDK_reduce_memory/**)"
+    ]
+  }
+}
